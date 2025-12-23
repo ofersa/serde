@@ -3571,7 +3571,7 @@ mod tests {
 
         #[test]
         fn works_with_string_errors() {
-            use crate::lib::string::String;
+            use crate::lib::String;
             let errors: &[(&'static str, String)] = &[
                 ("First", String::from("error one")),
                 ("Second", String::from("error two")),
