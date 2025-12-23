@@ -3499,3 +3499,85 @@ where
         )
     }
 }
+
+/// Formats a combined error message for untagged enum deserialization failures.
+///
+/// Takes a base message and a slice of (variant_name, error) pairs, producing
+/// a descriptive error message that lists each variant and why it failed to
+/// deserialize.
+#[cfg(any(feature = "std", feature = "alloc"))]
+pub fn format_untagged_enum_error<E>(
+    base_message: &str,
+    variant_errors: &[(&'static str, E)],
+) -> String
+where
+    E: fmt::Display,
+{
+    use crate::lib::fmt::Write;
+
+    if variant_errors.is_empty() {
+        return base_message.to_owned();
+    }
+
+    let mut message = base_message.to_owned();
+    message.push_str("; ");
+
+    for (i, (variant_name, error)) in variant_errors.iter().enumerate() {
+        if i > 0 {
+            message.push_str("; ");
+        }
+        let _ = write!(message, "{}: {}", variant_name, error);
+    }
+
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    mod format_untagged_enum_error_tests {
+        use super::super::format_untagged_enum_error;
+
+        #[test]
+        fn empty_errors_returns_base_message() {
+            let errors: &[(&'static str, &str)] = &[];
+            let result = format_untagged_enum_error("base message", errors);
+            assert_eq!(result, "base message");
+        }
+
+        #[test]
+        fn single_error_includes_variant_name_and_error() {
+            let errors: &[(&'static str, &str)] = &[("VariantA", "type mismatch")];
+            let result = format_untagged_enum_error("data did not match any variant", errors);
+            assert_eq!(
+                result,
+                "data did not match any variant; VariantA: type mismatch"
+            );
+        }
+
+        #[test]
+        fn multiple_errors_separated_by_semicolons() {
+            let errors: &[(&'static str, &str)] = &[
+                ("VariantA", "missing field `x`"),
+                ("VariantB", "expected string"),
+                ("VariantC", "invalid type"),
+            ];
+            let result = format_untagged_enum_error("no match", errors);
+            assert_eq!(
+                result,
+                "no match; VariantA: missing field `x`; VariantB: expected string; VariantC: invalid type"
+            );
+        }
+
+        #[test]
+        fn works_with_string_errors() {
+            use crate::lib::string::String;
+            let errors: &[(&'static str, String)] = &[
+                ("First", String::from("error one")),
+                ("Second", String::from("error two")),
+            ];
+            let result = format_untagged_enum_error("base", errors);
+            assert_eq!(result, "base; First: error one; Second: error two");
+        }
+    }
+}
