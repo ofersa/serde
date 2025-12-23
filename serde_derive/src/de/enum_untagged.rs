@@ -48,9 +48,11 @@ pub(super) fn deserialize(
 
         #first_attempt
 
+        let mut __errors = _serde::#private::Vec::new();
         #(
-            if let _serde::#private2::Ok(__ok) = #attempts {
-                return _serde::#private2::Ok(__ok);
+            match #attempts {
+                _serde::#private2::Ok(__ok) => return _serde::#private2::Ok(__ok),
+                _serde::#private2::Err(__err) => __errors.push(__err),
             }
         )*
 
