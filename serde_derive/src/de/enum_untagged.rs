@@ -25,16 +25,21 @@ pub(super) fn deserialize(
     cattrs: &attr::Container,
     first_attempt: Option<TokenStream>,
 ) -> Fragment {
-    let attempts = variants
+    let deserialized_variants: Vec<_> = variants
         .iter()
         .filter(|variant| !variant.attrs.skip_deserializing())
-        .map(|variant| Expr(deserialize_variant(params, variant, cattrs)));
-    // TODO this message could be better by saving the errors from the failed
-    // attempts. The heuristic used by TOML was to count the number of fields
-    // processed before an error, and use the error that happened after the
-    // largest number of fields. I'm not sure I like that. Maybe it would be
-    // better to save all the errors and combine them into one message that
-    // explains why none of the variants matched.
+        .collect();
+
+    let variant_names: Vec<_> = deserialized_variants
+        .iter()
+        .map(|variant| variant.ident.to_string())
+        .collect();
+
+    let attempts: Vec<_> = deserialized_variants
+        .iter()
+        .map(|variant| Expr(deserialize_variant(params, variant, cattrs)))
+        .collect();
+
     let fallthrough_msg = format!(
         "data did not match any variant of untagged enum {}",
         params.type_name()
@@ -48,15 +53,19 @@ pub(super) fn deserialize(
 
         #first_attempt
 
-        let mut __errors = _serde::#private::Vec::new();
+        let mut __errors: _serde::#private::Vec<(&'static str, __D::Error)> = _serde::#private::Vec::new();
         #(
             match #attempts {
                 _serde::#private2::Ok(__ok) => return _serde::#private2::Ok(__ok),
-                _serde::#private2::Err(__err) => __errors.push(__err),
+                _serde::#private2::Err(__err) => __errors.push((#variant_names, __err)),
             }
         )*
 
-        _serde::#private::Err(_serde::de::Error::custom(#fallthrough_msg))
+        let __combined_message = _serde::#private::de::format_untagged_enum_error(
+            #fallthrough_msg,
+            &__errors,
+        );
+        _serde::#private::Err(_serde::de::Error::custom(__combined_message))
     }
 }
 
