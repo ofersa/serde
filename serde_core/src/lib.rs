@@ -14,6 +14,16 @@
 //! re-exports all of these traits and can be used for this use case too. If in
 //! doubt, disregard `serde_core` and always use `serde`.
 //!
+//! # Iterator-based deserialization
+//!
+//! For simplified sequence deserialization, see [`Deserializer::deserialize_iter`]
+//! and the [`de::SeqIter`] type. These provide an ergonomic alternative to manual
+//! [`de::Visitor`] implementations for types with sequence fields.
+//!
+//! [`Deserializer::deserialize_iter`]: de::Deserializer::deserialize_iter
+//! [`de::SeqIter`]: de::SeqIter
+//! [`de::Visitor`]: de::Visitor
+//!
 //! Crates that depend on `serde_core` instead of `serde` are able to compile in
 //! parallel with `serde_derive` even when `serde`'s "derive" feature is turned on,
 //! as shown in the following build timings.

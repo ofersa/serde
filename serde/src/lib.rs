@@ -65,6 +65,40 @@
 //!   editing. *(deserialization only)*
 //! - [CSV], Comma-separated values is a tabular text file format.
 //!
+//! ## Iterator-based deserialization
+//!
+//! For hand-written `Deserialize` implementations, the traditional approach
+//! to deserializing sequences requires implementing a custom `Visitor`.
+//! Serde provides [`Deserializer::deserialize_iter`] as an ergonomic
+//! alternative that returns an iterator, significantly reducing boilerplate:
+//!
+//! ```edition2021
+//! use serde::de::{Deserialize, Deserializer};
+//!
+//! #[derive(serde::Deserialize)]
+//! struct Bar;
+//!
+//! struct Foo(Vec<Bar>);
+//!
+//! impl<'de> Deserialize<'de> for Foo {
+//!     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//!     where
+//!         D: Deserializer<'de>,
+//!     {
+//!         let bars = deserializer
+//!             .deserialize_iter::<Bar>()?
+//!             .collect::<Result<_, _>>()?;
+//!         Ok(Foo(bars))
+//!     }
+//! }
+//! ```
+//!
+//! See [`de::SeqIter`] and [`de::DeserializeIter`] for more details.
+//!
+//! [`Deserializer::deserialize_iter`]: de::Deserializer::deserialize_iter
+//! [`de::SeqIter`]: de::SeqIter
+//! [`de::DeserializeIter`]: de::DeserializeIter
+//!
 //! [JSON]: https://github.com/serde-rs/json
 //! [Postcard]: https://github.com/jamesmunns/postcard
 //! [CBOR]: https://github.com/enarx/ciborium

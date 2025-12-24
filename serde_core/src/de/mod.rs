@@ -100,15 +100,106 @@
 //!    - SocketAddrV4
 //!    - SocketAddrV6
 //!
+//! # Iterator-based sequence deserialization
+//!
+//! When implementing [`Deserialize`] manually for types containing sequences,
+//! the traditional approach requires implementing a custom [`Visitor`] with a
+//! `visit_seq` method. This can be verbose, especially when the collection
+//! already implements [`FromIterator`].
+//!
+//! Serde provides [`Deserializer::deserialize_iter`] as an ergonomic alternative
+//! that returns an iterator over the sequence elements, allowing you to use
+//! standard iterator methods like [`collect`].
+//!
+//! ## Comparison: Manual Visitor vs deserialize_iter
+//!
+//! **Traditional approach with manual Visitor:**
+//!
+//! ```edition2021
+//! use serde::de::{Deserialize, Deserializer, SeqAccess, Visitor};
+//! use std::fmt;
+//!
+//! #[derive(serde::Deserialize)]
+//! struct Bar;
+//!
+//! struct Foo(Vec<Bar>);
+//!
+//! impl<'de> Deserialize<'de> for Foo {
+//!     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//!     where
+//!         D: Deserializer<'de>,
+//!     {
+//!         struct FooVisitor;
+//!
+//!         impl<'de> Visitor<'de> for FooVisitor {
+//!             type Value = Foo;
+//!
+//!             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+//!                 formatter.write_str("a sequence of Bar")
+//!             }
+//!
+//!             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+//!             where
+//!                 A: SeqAccess<'de>,
+//!             {
+//!                 let mut bars = Vec::new();
+//!                 while let Some(bar) = seq.next_element()? {
+//!                     bars.push(bar);
+//!                 }
+//!                 Ok(Foo(bars))
+//!             }
+//!         }
+//!
+//!         deserializer.deserialize_seq(FooVisitor)
+//!     }
+//! }
+//! ```
+//!
+//! **Simplified approach with deserialize_iter:**
+//!
+//! ```edition2021
+//! use serde::de::{Deserialize, Deserializer};
+//!
+//! #[derive(serde::Deserialize)]
+//! struct Bar;
+//!
+//! struct Foo(Vec<Bar>);
+//!
+//! impl<'de> Deserialize<'de> for Foo {
+//!     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//!     where
+//!         D: Deserializer<'de>,
+//!     {
+//!         let bars = deserializer
+//!             .deserialize_iter::<Bar>()?
+//!             .collect::<Result<_, _>>()?;
+//!         Ok(Foo(bars))
+//!     }
+//! }
+//! ```
+//!
+//! The `deserialize_iter` method significantly reduces boilerplate when
+//! deserializing collections, leveraging Rust's [`FromIterator`] trait instead
+//! of requiring a custom visitor implementation.
+//!
+//! For more advanced use cases within visitor implementations, see [`SeqIter`],
+//! which wraps a [`SeqAccess`] as an iterator.
+//!
 //! [Implementing `Deserialize`]: https://serde.rs/impl-deserialize.html
+//! [`collect`]: core::iter::Iterator::collect
 //! [`Deserialize`]: crate::Deserialize
 //! [`Deserializer`]: crate::Deserializer
+//! [`Deserializer::deserialize_iter`]: crate::Deserializer::deserialize_iter
+//! [`FromIterator`]: core::iter::FromIterator
 //! [`LinkedHashMap<K, V>`]: https://docs.rs/linked-hash-map/*/linked_hash_map/struct.LinkedHashMap.html
 //! [`postcard`]: https://github.com/jamesmunns/postcard
 //! [`linked-hash-map`]: https://crates.io/crates/linked-hash-map
 //! [`serde_derive`]: https://crates.io/crates/serde_derive
 //! [`serde_json`]: https://github.com/serde-rs/json
 //! [`serde_yaml`]: https://github.com/dtolnay/serde-yaml
+//! [`SeqAccess`]: crate::de::SeqAccess
+//! [`SeqIter`]: crate::de::SeqIter
+//! [`Visitor`]: crate::de::Visitor
 //! [derive section of the manual]: https://serde.rs/derive.html
 //! [data formats]: https://serde.rs/#data-formats
 
@@ -1900,6 +1991,11 @@ where
 /// needing to implement a custom [`Visitor`]. It is particularly useful for
 /// deserializing collections that implement [`FromIterator`].
 ///
+/// For an even simpler approach that doesn't require implementing a `Visitor` at all,
+/// see [`Deserializer::deserialize_iter`], which returns a [`DeserializeIter`].
+///
+/// [`Deserializer::deserialize_iter`]: Deserializer::deserialize_iter
+///
 /// # Example
 ///
 /// ```edition2021
@@ -2053,31 +2149,64 @@ where
 ///
 /// This type provides an ergonomic way to deserialize sequences as iterators,
 /// avoiding the need to implement a custom [`Visitor`] for simple collection
-/// deserialization.
+/// deserialization. It significantly reduces the pain of writing custom
+/// deserialization for types with sequence fields.
 ///
 /// The iterator yields `Result<T, E>` items where `E` is the deserializer's
 /// error type. The sequence elements are deserialized eagerly when
 /// `deserialize_iter` is called, but iteration over them is lazy.
 ///
+/// This approach leverages Rust's [`FromIterator`] trait, allowing any
+/// collection that implements it to be populated directly from the iterator.
+/// This is particularly valuable because most collections already have
+/// optimized `FromIterator` implementations.
+///
+/// [`FromIterator`]: core::iter::FromIterator
+///
 /// # Example
+///
+/// The traditional approach to deserializing a sequence requires implementing
+/// a custom `Visitor` with a `visit_seq` method. With `deserialize_iter`,
+/// the same logic becomes much more concise:
 ///
 /// ```edition2021
 /// use serde::de::{Deserialize, Deserializer};
 ///
 /// #[derive(serde::Deserialize)]
-/// struct Item(u32);
+/// struct Bar;
 ///
-/// struct Collection(Vec<Item>);
+/// struct Foo(Vec<Bar>);
 ///
-/// impl<'de> Deserialize<'de> for Collection {
+/// impl<'de> Deserialize<'de> for Foo {
 ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 ///     where
 ///         D: Deserializer<'de>,
 ///     {
-///         let items: Vec<Item> = deserializer
-///             .deserialize_iter()?
+///         let bars = deserializer
+///             .deserialize_iter::<Bar>()?
 ///             .collect::<Result<_, _>>()?;
-///         Ok(Collection(items))
+///         Ok(Foo(bars))
+///     }
+/// }
+/// ```
+///
+/// This pattern works with any collection that implements `FromIterator`:
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer};
+/// use std::collections::HashSet;
+///
+/// struct UniqueIds(HashSet<u32>);
+///
+/// impl<'de> Deserialize<'de> for UniqueIds {
+///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+///     where
+///         D: Deserializer<'de>,
+///     {
+///         let ids: HashSet<u32> = deserializer
+///             .deserialize_iter::<u32>()?
+///             .collect::<Result<_, _>>()?;
+///         Ok(UniqueIds(ids))
 ///     }
 /// }
 /// ```
