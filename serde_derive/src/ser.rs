@@ -813,7 +813,7 @@ fn serialize_owned_adjacently_tagged_variant(
         Style::Tuple => {
             // For tuple variants in adjacent tagging, we serialize the content
             // using the regular tuple serialization
-            let inner = serialize_owned_tuple_variant(TupleVariant::Untagged, params, &variant.fields);
+            let inner = Stmts(serialize_owned_tuple_variant(TupleVariant::Untagged, params, &variant.fields));
             let this_type = &params.this_type;
             let fields_ty = variant.fields.iter().map(|f| &f.ty);
             let fields_ident: Vec<_> = (0..variant.fields.len())
@@ -856,12 +856,12 @@ fn serialize_owned_adjacently_tagged_variant(
             }
         }
         Style::Struct => {
-            let inner = serialize_owned_struct_variant(
+            let inner = Stmts(serialize_owned_struct_variant(
                 StructVariant::Untagged,
                 params,
                 &variant.fields,
                 variant_name,
-            );
+            ));
             let this_type = &params.this_type;
             let fields_ty = variant.fields.iter().map(|f| &f.ty);
             let members: Vec<_> = variant.fields.iter().map(|f| &f.member).collect();
