@@ -2385,3 +2385,104 @@ fn test_atomics() {
         test(AtomicU64::load, 8589934592u64);
     }
 }
+
+mod seq_iter_tests {
+    use serde::de::{Deserialize, DeserializeSeed, Error, SeqAccess, SeqIter, Visitor};
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    /// A mock SeqAccess implementation for testing SeqIter.
+    struct MockSeqAccess<'de, T> {
+        items: Vec<T>,
+        index: usize,
+        marker: PhantomData<&'de ()>,
+    }
+
+    impl<'de, T> MockSeqAccess<'de, T> {
+        fn new(items: Vec<T>) -> Self {
+            MockSeqAccess {
+                items,
+                index: 0,
+                marker: PhantomData,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockError(String);
+
+    impl fmt::Display for MockError {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl std::error::Error for MockError {}
+
+    impl Error for MockError {
+        fn custom<T: fmt::Display>(msg: T) -> Self {
+            MockError(msg.to_string())
+        }
+    }
+
+    impl<'de, T: Clone + Deserialize<'de>> SeqAccess<'de> for MockSeqAccess<'de, T> {
+        type Error = MockError;
+
+        fn next_element_seed<S>(&mut self, _seed: S) -> Result<Option<S::Value>, Self::Error>
+        where
+            S: DeserializeSeed<'de>,
+        {
+            // For testing, we bypass the seed and return cloned items directly.
+            // This works because we control both the input and output types in tests.
+            if self.index < self.items.len() {
+                let item = self.items[self.index].clone();
+                self.index += 1;
+                // SAFETY: We're in a test environment where T == S::Value
+                Ok(Some(unsafe { std::mem::transmute_copy(&item) }))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            Some(self.items.len() - self.index)
+        }
+    }
+
+    #[test]
+    fn test_seq_iter_empty() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(Vec::new());
+        let mut iter: SeqIter<'_, _, i32> = SeqIter::new(seq);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint_method() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(vec![1, 2, 3]);
+        let iter: SeqIter<'_, _, i32> = SeqIter::new(seq);
+        assert_eq!(iter.size_hint(), Some(3));
+    }
+
+    #[test]
+    fn test_seq_iter_iterator_size_hint() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(vec![1, 2, 3]);
+        let iter: SeqIter<'_, _, i32> = SeqIter::new(seq);
+        assert_eq!(Iterator::size_hint(&iter), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_seq_iter_new_unchecked() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(vec![42]);
+        // SAFETY: MockSeqAccess satisfies 'de bound in this test context
+        let iter: SeqIter<'_, _, i32> = unsafe { SeqIter::new_unchecked(seq) };
+        assert_eq!(iter.size_hint(), Some(1));
+    }
+
+    #[test]
+    fn test_seq_iter_collect() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(vec![1, 2, 3]);
+        let iter: SeqIter<'_, _, i32> = SeqIter::new(seq);
+        let result: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(result.unwrap(), vec![1, 2, 3]);
+    }
+}
