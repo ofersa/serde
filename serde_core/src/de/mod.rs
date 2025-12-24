@@ -1254,6 +1254,105 @@ pub trait Deserializer<'de>: Sized {
         true
     }
 
+    /// Deserialize a sequence lazily, returning an iterator over the elements.
+    ///
+    /// This method provides a more ergonomic way to deserialize sequences by
+    /// returning a [`SeqAccessIterator`] that can be used with standard iterator
+    /// combinators like `collect()`, `map()`, `filter()`, etc.
+    ///
+    /// This is particularly useful when implementing custom deserialization for
+    /// types that contain sequence fields, as it avoids the need to write a
+    /// custom `Visitor` implementation just to collect elements into a container.
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::de::{Deserialize, Deserializer};
+    /// use serde_derive::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Bar;
+    ///
+    /// struct Foo(Vec<Bar>);
+    ///
+    /// impl<'de> Deserialize<'de> for Foo {
+    ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    ///     where
+    ///         D: Deserializer<'de>,
+    ///     {
+    ///         let bars = deserializer
+    ///             .deserialize_iter::<Bar>()?
+    ///             .collect::<Result<_, _>>()?;
+    ///         Ok(Foo(bars))
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Extracting the underlying SeqAccess
+    ///
+    /// If you need access to the underlying `SeqAccess` after partial iteration,
+    /// you can use [`SeqAccessIterator::into_inner`] to retrieve it.
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+    fn deserialize_iter<T>(self) -> Result<SeqAccessIterator<'de, SeqAccessWrapper<'de, Self::Error>, T>, Self::Error>
+    where
+        T: Deserialize<'de>,
+    {
+        struct IterVisitor<'de, E, T> {
+            _marker: PhantomData<(&'de (), fn() -> E, fn() -> T)>,
+        }
+
+        impl<'de, E, T> Visitor<'de> for IterVisitor<'de, E, T>
+        where
+            E: Error,
+            T: Deserialize<'de>,
+        {
+            type Value = SeqAccessIterator<'de, SeqAccessWrapper<'de, E>, T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de> + 'de,
+            {
+                // The SeqAccess error type must match our expected error type E.
+                // This is guaranteed by the Deserializer implementation which
+                // provides a SeqAccess with Error = Self::Error.
+                let original_wrapper: SeqAccessWrapper<'de, A::Error> = SeqAccessWrapper::new(seq);
+
+                // SAFETY: A::Error and E are both Deserializer::Error.
+                // The Deserializer trait guarantees that when it calls visit_seq,
+                // the SeqAccess::Error matches Deserializer::Error, which is our E
+                // parameter. Therefore, SeqAccessWrapper<'de, A::Error> and
+                // SeqAccessWrapper<'de, E> are the same type at runtime.
+                //
+                // We use pointer casting to avoid transmute's compile-time size check,
+                // which can't verify that A::Error and E have the same size even though
+                // they are the same type at runtime.
+                //
+                // Note: This cast is safe because:
+                // 1. SeqAccessWrapper has the same memory layout regardless of E
+                //    (it's just a Box containing a trait object pointer)
+                // 2. A::Error == E at runtime (guaranteed by the Deserializer contract)
+                let wrapper: SeqAccessWrapper<'de, E> = unsafe {
+                    let ptr = &original_wrapper as *const SeqAccessWrapper<'de, A::Error>;
+                    let ptr = ptr as *const SeqAccessWrapper<'de, E>;
+                    let result = core::ptr::read(ptr);
+                    core::mem::forget(original_wrapper);
+                    result
+                };
+
+                Ok(SeqAccessIterator::new(wrapper))
+            }
+        }
+
+        self.deserialize_seq(IterVisitor::<Self::Error, T> {
+            _marker: PhantomData,
+        })
+    }
+
     // Not public API.
     #[cfg(all(not(no_serde_derive), any(feature = "std", feature = "alloc")))]
     #[doc(hidden)]
@@ -1805,6 +1904,101 @@ where
     #[inline]
     fn size_hint(&self) -> Option<usize> {
         (**self).size_hint()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// A type-erased wrapper around a [`SeqAccess`] implementation.
+///
+/// This wrapper is used internally by [`Deserializer::deserialize_iter`] to
+/// return an iterator without exposing the concrete `SeqAccess` type from the
+/// deserializer.
+///
+/// # Lifetime
+///
+/// The `'de` lifetime is the lifetime of data that may be borrowed by
+/// deserialized elements. See the page [Understanding deserializer lifetimes]
+/// for a more detailed explanation of these lifetimes.
+///
+/// [Understanding deserializer lifetimes]: https://serde.rs/lifetimes.html
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+pub struct SeqAccessWrapper<'de, E: Error> {
+    inner: Box<dyn ErasedSeqAccess<'de, E> + 'de>,
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, E: Error> SeqAccessWrapper<'de, E> {
+    /// Creates a new `SeqAccessWrapper` from a `SeqAccess` implementation.
+    ///
+    /// This function performs type erasure on the `SeqAccess`, allowing it to
+    /// be stored and used without knowing the concrete type.
+    #[inline]
+    pub fn new<A>(seq: A) -> Self
+    where
+        A: SeqAccess<'de, Error = E> + 'de,
+    {
+        SeqAccessWrapper {
+            inner: Box::new(ErasedSeqAccessImpl { inner: seq }),
+        }
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, E: Error> SeqAccess<'de> for SeqAccessWrapper<'de, E> {
+    type Error = E;
+
+    #[inline]
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        self.inner.erased_next_element(seed)
+    }
+
+    #[inline]
+    fn size_hint(&self) -> Option<usize> {
+        self.inner.erased_size_hint()
+    }
+}
+
+/// Internal trait for type-erased SeqAccess operations.
+///
+/// The error type E is a type parameter rather than an associated type so that
+/// the vtable layout is independent of the error type. This allows us to safely
+/// cast between different error types when we know they are the same at runtime.
+#[cfg(any(feature = "std", feature = "alloc"))]
+trait ErasedSeqAccess<'de, E: Error> {
+    fn erased_next_element<T>(&mut self, seed: T) -> Result<Option<T::Value>, E>
+    where
+        T: DeserializeSeed<'de>;
+
+    fn erased_size_hint(&self) -> Option<usize>;
+}
+
+/// Implementation wrapper for ErasedSeqAccess.
+#[cfg(any(feature = "std", feature = "alloc"))]
+struct ErasedSeqAccessImpl<A> {
+    inner: A,
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, A> ErasedSeqAccess<'de, A::Error> for ErasedSeqAccessImpl<A>
+where
+    A: SeqAccess<'de>,
+{
+    #[inline]
+    fn erased_next_element<T>(&mut self, seed: T) -> Result<Option<T::Value>, A::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        self.inner.next_element_seed(seed)
+    }
+
+    #[inline]
+    fn erased_size_hint(&self) -> Option<usize> {
+        self.inner.size_hint()
     }
 }
 
