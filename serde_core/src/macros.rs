@@ -37,7 +37,7 @@
 /// #     forward_to_deserialize_any! {
 /// #         i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 /// #         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-/// #         tuple_struct map struct enum identifier ignored_any
+/// #         tuple_struct map struct enum identifier ignored_any iter
 /// #     }
 /// # }
 /// ```
@@ -67,7 +67,7 @@
 ///     forward_to_deserialize_any! {
 ///         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 ///         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-///         tuple_struct map struct enum identifier ignored_any
+///         tuple_struct map struct enum identifier ignored_any iter
 ///     }
 /// }
 /// ```
@@ -98,7 +98,7 @@
 ///     <W: Visitor<'q>>
 ///     bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 ///     bytes byte_buf option unit unit_struct newtype_struct seq tuple
-///     tuple_struct map struct enum identifier ignored_any
+///     tuple_struct map struct enum identifier ignored_any iter
 /// }
 /// # }
 /// ```
@@ -226,5 +226,17 @@ macro_rules! forward_to_deserialize_any_helper {
     };
     (ignored_any<$l:tt, $v:ident>) => {
         forward_to_deserialize_any_method!{deserialize_ignored_any<$l, $v>()}
+    };
+    (iter<$l:tt, $v:ident>) => {
+        fn deserialize_iter<T>(self) -> $crate::__private::Result<$crate::de::SeqAccessIterator<$l, $crate::de::IterSeqAccess<$l, <Self as $crate::de::Deserializer<$l>>::Error>, T>, <Self as $crate::de::Deserializer<$l>>::Error>
+        where
+            T: $crate::de::Deserialize<$l>,
+        {
+            let error = <Self as $crate::de::Deserializer<$l>>::Error::custom(
+                "deserialize_iter is not supported by this deserializer",
+            );
+            let seq_access = $crate::de::IterSeqAccess::with_error(error);
+            $crate::__private::Ok($crate::de::SeqAccessIterator::new(seq_access))
+        }
     };
 }
