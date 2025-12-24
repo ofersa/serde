@@ -2521,3 +2521,130 @@ impl Display for WithDecimalPoint {
         Ok(())
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    /// A mock SeqAccess that yields a fixed sequence of values.
+    struct MockSeqAccess<'de, I> {
+        iter: I,
+        size: Option<usize>,
+        _marker: PhantomData<&'de ()>,
+    }
+
+    impl<'de, I, T> MockSeqAccess<'de, I>
+    where
+        I: Iterator<Item = T>,
+    {
+        fn new(iter: I, size: Option<usize>) -> Self {
+            MockSeqAccess {
+                iter,
+                size,
+                _marker: PhantomData,
+            }
+        }
+    }
+
+    impl<'de, I, T> SeqAccess<'de> for MockSeqAccess<'de, I>
+    where
+        I: Iterator<Item = T>,
+        T: Clone + 'de,
+    {
+        type Error = value::Error;
+
+        fn next_element_seed<S>(&mut self, _seed: S) -> Result<Option<S::Value>, Self::Error>
+        where
+            S: DeserializeSeed<'de>,
+        {
+            // For testing, we just return values directly
+            // This is a simplification - in real code, we'd use the seed
+            unimplemented!("Use next_element instead for this mock")
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            self.size
+        }
+    }
+
+    /// A simpler mock that works with our SeqIter tests.
+    struct SimpleSeqAccess<I> {
+        iter: I,
+        size: Option<usize>,
+    }
+
+    impl<I> SimpleSeqAccess<I> {
+        fn new(iter: I, size: Option<usize>) -> Self {
+            SimpleSeqAccess { iter, size }
+        }
+    }
+
+    impl<'de, I> SeqAccess<'de> for SimpleSeqAccess<I>
+    where
+        I: Iterator<Item = i32>,
+    {
+        type Error = value::Error;
+
+        fn next_element_seed<S>(&mut self, _seed: S) -> Result<Option<S::Value>, Self::Error>
+        where
+            S: DeserializeSeed<'de>,
+        {
+            // This mock only works when S::Value is i32
+            // For testing purposes, we transmute the result
+            match self.iter.next() {
+                Some(v) => {
+                    // SAFETY: This mock is only used in tests where S::Value is i32
+                    let value = unsafe { core::mem::transmute_copy::<i32, S::Value>(&v) };
+                    Ok(Some(value))
+                }
+                None => Ok(None),
+            }
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            self.size
+        }
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint_with_known_size() {
+        let seq = SimpleSeqAccess::new([1i32, 2, 3].into_iter(), Some(3));
+        let iter: SeqIter<SimpleSeqAccess<_>, i32> = SeqIter::new(seq);
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint_unknown() {
+        let seq = SimpleSeqAccess::new([1i32, 2].into_iter(), None);
+        let iter: SeqIter<SimpleSeqAccess<_>, i32> = SeqIter::new(seq);
+        assert_eq!(iter.size_hint(), (0, None));
+    }
+
+    #[test]
+    fn test_seq_iter_collects_all_elements() {
+        let seq = SimpleSeqAccess::new([10i32, 20, 30].into_iter(), Some(3));
+        let iter: SeqIter<SimpleSeqAccess<_>, i32> = SeqIter::new(seq);
+        let result: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(result.unwrap(), vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_seq_iter_empty_sequence() {
+        let seq = SimpleSeqAccess::new(core::iter::empty::<i32>(), Some(0));
+        let iter: SeqIter<SimpleSeqAccess<_>, i32> = SeqIter::new(seq);
+        let result: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(result.unwrap(), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn test_seq_iter_new_unchecked() {
+        let seq = SimpleSeqAccess::new([5i32, 10].into_iter(), Some(2));
+        // SAFETY: SimpleSeqAccess satisfies 'de bounds
+        let iter: SeqIter<SimpleSeqAccess<_>, i32> = unsafe { SeqIter::new_unchecked(seq) };
+        let result: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(result.unwrap(), vec![5, 10]);
+    }
+}
