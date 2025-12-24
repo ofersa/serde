@@ -253,9 +253,6 @@ macro_rules! crate_root {
             de, forward_to_deserialize_any, ser, Deserialize, Deserializer, Serialize, Serializer,
         };
 
-        #[doc(inline)]
-        pub use serde_core::de::SeqAccessIterator;
-
         // Used by generated code and doc tests. Not public API.
         #[doc(hidden)]
         mod private;
