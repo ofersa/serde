@@ -2385,3 +2385,341 @@ fn test_atomics() {
         test(AtomicU64::load, 8589934592u64);
     }
 }
+
+//////////////////////////////////////////////////////////////////////////
+// Tests for deserialize_iter
+
+/// Example from the task description: Bar type that can be deserialized
+#[derive(PartialEq, Debug, Deserialize)]
+struct Bar;
+
+/// Foo wrapper that uses deserialize_iter to collect Vec<Bar>
+/// This is the exact example from the task description
+struct Foo(Vec<Bar>);
+
+impl<'de> Deserialize<'de> for Foo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bars = deserializer
+            .deserialize_iter::<Bar>()?
+            .collect::<Result<_, _>>()?;
+        Ok(Foo(bars))
+    }
+}
+
+#[test]
+fn test_deserialize_iter_foo_vec_bar() {
+    // Test the example from the task: Foo wrapping Vec<Bar>
+    use serde::de::value::SeqDeserializer;
+
+    // Create a sequence of unit values (Bar is a unit struct)
+    let data: Vec<()> = vec![(), (), ()];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let foo = Foo::deserialize(deserializer).unwrap();
+    assert_eq!(foo.0.len(), 3);
+}
+
+#[test]
+fn test_deserialize_iter_collect_into_vec() {
+    // Test collecting into Vec using deserialize_iter
+    use serde::de::value::SeqDeserializer;
+
+    let data = vec![1i32, 2, 3, 4, 5];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let iter = deserializer.deserialize_iter::<i32>().unwrap();
+    let collected: Vec<i32> = iter.collect::<Result<_, _>>().unwrap();
+
+    assert_eq!(collected, vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn test_deserialize_iter_collect_into_btreeset() {
+    // Test collecting into BTreeSet (another FromIterator type)
+    use serde::de::value::SeqDeserializer;
+
+    let data = vec![3i32, 1, 4, 1, 5, 9, 2, 6];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let iter = deserializer.deserialize_iter::<i32>().unwrap();
+    let collected: BTreeSet<i32> = iter.collect::<Result<_, _>>().unwrap();
+
+    // BTreeSet deduplicates, so we should have unique sorted values
+    let expected: BTreeSet<i32> = [1, 2, 3, 4, 5, 6, 9].iter().copied().collect();
+    assert_eq!(collected, expected);
+}
+
+#[test]
+fn test_deserialize_iter_collect_into_hashset() {
+    // Test collecting into HashSet (another FromIterator type)
+    use serde::de::value::SeqDeserializer;
+
+    let data = vec![10i32, 20, 30, 20, 10];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let iter = deserializer.deserialize_iter::<i32>().unwrap();
+    let collected: HashSet<i32> = iter.collect::<Result<_, _>>().unwrap();
+
+    // HashSet deduplicates
+    let expected: HashSet<i32> = [10, 20, 30].iter().copied().collect();
+    assert_eq!(collected, expected);
+}
+
+#[test]
+fn test_deserialize_iter_with_custom_type() {
+    // Test deserialize_iter with a custom deserializable type
+    use serde::de::value::SeqDeserializer;
+
+    #[derive(PartialEq, Debug, Deserialize)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    // Create wrapper that uses deserialize_iter
+    struct Points(Vec<Point>);
+
+    impl<'de> Deserialize<'de> for Points {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let points = deserializer
+                .deserialize_iter::<Point>()?
+                .collect::<Result<_, _>>()?;
+            Ok(Points(points))
+        }
+    }
+
+    // For this test, we use Vec of tuples which can deserialize into Point
+    let data: Vec<(i32, i32)> = vec![(1, 2), (3, 4), (5, 6)];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let points = Points::deserialize(deserializer).unwrap();
+    assert_eq!(points.0.len(), 3);
+    assert_eq!(points.0[0], Point { x: 1, y: 2 });
+    assert_eq!(points.0[1], Point { x: 3, y: 4 });
+    assert_eq!(points.0[2], Point { x: 5, y: 6 });
+}
+
+#[test]
+fn test_deserialize_iter_empty_sequence() {
+    // Test deserialize_iter with an empty sequence
+    use serde::de::value::SeqDeserializer;
+
+    let data: Vec<i32> = vec![];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let iter = deserializer.deserialize_iter::<i32>().unwrap();
+    let collected: Vec<i32> = iter.collect::<Result<_, _>>().unwrap();
+
+    assert!(collected.is_empty());
+}
+
+#[test]
+fn test_deserialize_iter_error_handling_mid_iteration() {
+    // Test that errors are properly propagated during iteration
+    use serde::de::value::SeqDeserializer;
+
+    // Create a sequence with mixed types that will cause an error
+    // We'll try to deserialize strings as i32, which should fail
+    let data = vec!["not_a_number".to_string()];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let mut iter = deserializer.deserialize_iter::<i32>().unwrap();
+
+    // The first element should be an error
+    let result = iter.next();
+    assert!(result.is_some());
+    assert!(result.unwrap().is_err());
+}
+
+#[test]
+fn test_deserialize_iter_partial_collection_on_error() {
+    // Test that we can collect successfully up to an error
+    use serde::de::value::SeqDeserializer;
+
+    let data = vec![1i32, 2, 3];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let iter = deserializer.deserialize_iter::<i32>().unwrap();
+
+    // Use take to only get first 2 elements
+    let collected: Vec<i32> = iter.take(2).collect::<Result<_, _>>().unwrap();
+    assert_eq!(collected, vec![1, 2]);
+}
+
+#[test]
+fn test_deserialize_iter_size_hint() {
+    // Test that size_hint is properly maintained
+    use serde::de::value::SeqDeserializer;
+
+    let data = vec![1i32, 2, 3, 4, 5];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let mut iter = deserializer.deserialize_iter::<i32>().unwrap();
+
+    // Initial size hint should reflect all elements
+    assert_eq!(iter.size_hint(), (5, Some(5)));
+
+    // After consuming one element
+    let _ = iter.next();
+    assert_eq!(iter.size_hint(), (4, Some(4)));
+
+    // After consuming two more
+    let _ = iter.next();
+    let _ = iter.next();
+    assert_eq!(iter.size_hint(), (2, Some(2)));
+}
+
+#[test]
+fn test_deserialize_iter_with_strings() {
+    // Test deserialize_iter with String type
+    use serde::de::value::SeqDeserializer;
+
+    let data = vec!["hello".to_string(), "world".to_string(), "test".to_string()];
+    let deserializer: SeqDeserializer<_, serde::de::value::Error> = data.into_deserializer();
+
+    let iter = deserializer.deserialize_iter::<String>().unwrap();
+    let collected: Vec<String> = iter.collect::<Result<_, _>>().unwrap();
+
+    assert_eq!(collected, vec!["hello", "world", "test"]);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// JSON deserializer integration tests for deserialize_iter
+
+#[test]
+fn test_deserialize_iter_with_json_basic() {
+    // Test deserialize_iter with actual JSON deserializer
+    let json = "[1, 2, 3, 4, 5]";
+    let mut de = serde_json::Deserializer::from_str(json);
+
+    let iter = Deserializer::deserialize_iter::<i32>(&mut de).unwrap();
+    let collected: Vec<i32> = iter.collect::<Result<_, _>>().unwrap();
+
+    assert_eq!(collected, vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn test_deserialize_iter_with_json_foo_bar_example() {
+    // Test the exact Foo/Bar example from the task with JSON
+    #[derive(PartialEq, Debug, Deserialize)]
+    struct JsonBar {
+        value: i32,
+    }
+
+    struct JsonFoo(Vec<JsonBar>);
+
+    impl<'de> Deserialize<'de> for JsonFoo {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let bars = deserializer
+                .deserialize_iter::<JsonBar>()?
+                .collect::<Result<_, _>>()?;
+            Ok(JsonFoo(bars))
+        }
+    }
+
+    let json = r#"[{"value": 10}, {"value": 20}, {"value": 30}]"#;
+    let mut de = serde_json::Deserializer::from_str(json);
+
+    let foo = JsonFoo::deserialize(&mut de).unwrap();
+    assert_eq!(foo.0.len(), 3);
+    assert_eq!(foo.0[0], JsonBar { value: 10 });
+    assert_eq!(foo.0[1], JsonBar { value: 20 });
+    assert_eq!(foo.0[2], JsonBar { value: 30 });
+}
+
+#[test]
+fn test_deserialize_iter_with_json_collect_hashset() {
+    // Test collecting JSON array into HashSet
+    let json = "[1, 2, 3, 2, 1, 4, 5]";
+    let mut de = serde_json::Deserializer::from_str(json);
+
+    let iter = Deserializer::deserialize_iter::<i32>(&mut de).unwrap();
+    let collected: HashSet<i32> = iter.collect::<Result<_, _>>().unwrap();
+
+    let expected: HashSet<i32> = [1, 2, 3, 4, 5].iter().copied().collect();
+    assert_eq!(collected, expected);
+}
+
+#[test]
+fn test_deserialize_iter_with_json_error_mid_iteration() {
+    // Test that errors during JSON parsing are properly propagated
+    // Mix of valid integers and invalid string
+    let json = r#"[1, 2, "not_an_int", 4]"#;
+    let mut de = serde_json::Deserializer::from_str(json);
+
+    let mut iter = Deserializer::deserialize_iter::<i32>(&mut de).unwrap();
+
+    // First two should succeed
+    assert_eq!(iter.next().unwrap().unwrap(), 1);
+    assert_eq!(iter.next().unwrap().unwrap(), 2);
+
+    // Third should be an error
+    let result = iter.next();
+    assert!(result.is_some());
+    assert!(result.unwrap().is_err());
+}
+
+#[test]
+fn test_deserialize_iter_with_json_empty_array() {
+    // Test deserialize_iter with empty JSON array
+    let json = "[]";
+    let mut de = serde_json::Deserializer::from_str(json);
+
+    let iter = Deserializer::deserialize_iter::<i32>(&mut de).unwrap();
+    let collected: Vec<i32> = iter.collect::<Result<_, _>>().unwrap();
+
+    assert!(collected.is_empty());
+}
+
+#[test]
+fn test_deserialize_iter_with_json_strings() {
+    // Test deserialize_iter with JSON array of strings
+    let json = r#"["hello", "world", "serde"]"#;
+    let mut de = serde_json::Deserializer::from_str(json);
+
+    let iter = Deserializer::deserialize_iter::<String>(&mut de).unwrap();
+    let collected: Vec<String> = iter.collect::<Result<_, _>>().unwrap();
+
+    assert_eq!(collected, vec!["hello", "world", "serde"]);
+}
+
+#[test]
+fn test_deserialize_iter_with_json_nested_objects() {
+    // Test deserialize_iter with nested JSON objects
+    #[derive(PartialEq, Debug, Deserialize)]
+    struct Person {
+        name: String,
+        age: u32,
+    }
+
+    let json = r#"[{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]"#;
+    let mut de = serde_json::Deserializer::from_str(json);
+
+    let iter = Deserializer::deserialize_iter::<Person>(&mut de).unwrap();
+    let collected: Vec<Person> = iter.collect::<Result<_, _>>().unwrap();
+
+    assert_eq!(collected.len(), 2);
+    assert_eq!(
+        collected[0],
+        Person {
+            name: "Alice".to_string(),
+            age: 30
+        }
+    );
+    assert_eq!(
+        collected[1],
+        Person {
+            name: "Bob".to_string(),
+            age: 25
+        }
+    );
+}
