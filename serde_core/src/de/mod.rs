@@ -2529,3 +2529,92 @@ impl Display for WithDecimalPoint {
         Ok(())
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::de::value::Error;
+
+    /// A mock SeqAccess implementation for testing SeqIter.
+    struct MockSeqAccess {
+        items: Vec<i32>,
+        index: usize,
+    }
+
+    impl MockSeqAccess {
+        fn new(items: Vec<i32>) -> Self {
+            MockSeqAccess { items, index: 0 }
+        }
+    }
+
+    impl<'de> SeqAccess<'de> for MockSeqAccess {
+        type Error = Error;
+
+        fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+        where
+            T: DeserializeSeed<'de>,
+        {
+            if self.index < self.items.len() {
+                let value = self.items[self.index];
+                self.index += 1;
+                seed.deserialize(value::I32Deserializer::new(value))
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            Some(self.items.len() - self.index)
+        }
+    }
+
+    #[test]
+    fn test_seq_iter_empty() {
+        let seq = MockSeqAccess::new(vec![]);
+        let iter = SeqIter::<i32, _>::new(seq);
+        let collected: Vec<Result<i32, _>> = iter.collect();
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn test_seq_iter_single_element() {
+        let seq = MockSeqAccess::new(vec![42]);
+        let iter = SeqIter::<i32, _>::new(seq);
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![42]);
+    }
+
+    #[test]
+    fn test_seq_iter_multiple_elements() {
+        let seq = MockSeqAccess::new(vec![1, 2, 3, 4, 5]);
+        let iter = SeqIter::<i32, _>::new(seq);
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint() {
+        let seq = MockSeqAccess::new(vec![1, 2, 3]);
+        let iter = SeqIter::<i32, _>::new(seq);
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint_method() {
+        let seq = MockSeqAccess::new(vec![1, 2, 3]);
+        let iter = SeqIter::<i32, _>::new(seq);
+        assert_eq!(SeqIter::size_hint(&iter), Some(3));
+    }
+
+    #[test]
+    fn test_seq_iter_new_unchecked() {
+        let seq = MockSeqAccess::new(vec![10, 20, 30]);
+        // SAFETY: MockSeqAccess satisfies 'de bound (it owns its data).
+        let iter = unsafe { SeqIter::<i32, _>::new_unchecked(seq) };
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![10, 20, 30]);
+    }
+}
