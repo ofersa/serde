@@ -435,227 +435,104 @@ fn test_deserialize_iter_into_linked_list() {
 
 #[test]
 fn test_early_termination_with_take() {
-    struct FirstThree(Vec<i32>);
-
-    impl<'de> Deserialize<'de> for FirstThree {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct TakeVisitor;
-
-            impl<'de> Visitor<'de> for TakeVisitor {
-                type Value = FirstThree;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a sequence")
-                }
-
-                fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: SeqAccess<'de>,
-                {
-                    let iter: SeqAccessIterator<A, i32> = SeqAccessIterator::new(seq);
-                    // Only take first 3 elements, even if more are present
-                    let result: Result<Vec<i32>, _> = iter.take(3).collect();
-                    Ok(FirstThree(result?))
-                }
-            }
-
-            deserializer.deserialize_seq(TakeVisitor)
-        }
-    }
-
+    // Test early termination by directly using SeqAccess (not through Deserializer
+    // which validates all elements are consumed)
     let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
+    let mut seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
         SeqDeserializer::new(data.into_iter());
-    let result: FirstThree = FirstThree::deserialize(seq).unwrap();
 
-    assert_eq!(result.0, vec![1, 2, 3]);
+    let iter: SeqAccessIterator<&mut SeqDeserializer<std::vec::IntoIter<i32>, ValueError>, i32> =
+        SeqAccessIterator::new(&mut seq);
+    // Only take first 3 elements, even if more are present
+    let result: Result<Vec<i32>, _> = iter.take(3).collect();
+
+    assert_eq!(result.unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
 fn test_early_termination_with_take_while() {
-    struct UntilZero(Vec<i32>);
-
-    impl<'de> Deserialize<'de> for UntilZero {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct TakeWhileVisitor;
-
-            impl<'de> Visitor<'de> for TakeWhileVisitor {
-                type Value = UntilZero;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a sequence")
-                }
-
-                fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: SeqAccess<'de>,
-                {
-                    let iter: SeqAccessIterator<A, i32> = SeqAccessIterator::new(seq);
-                    // Take elements until we see a zero
-                    let result: Vec<i32> = iter
-                        .take_while(|r| r.as_ref().map(|&x| x != 0).unwrap_or(false))
-                        .map(|r| r.unwrap())
-                        .collect();
-                    Ok(UntilZero(result))
-                }
-            }
-
-            deserializer.deserialize_seq(TakeWhileVisitor)
-        }
-    }
-
+    // Test early termination with take_while by directly using SeqAccess
     let data = vec![1, 2, 3, 0, 4, 5];
-    let seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
+    let mut seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
         SeqDeserializer::new(data.into_iter());
-    let result: UntilZero = UntilZero::deserialize(seq).unwrap();
 
-    assert_eq!(result.0, vec![1, 2, 3]);
+    let iter: SeqAccessIterator<&mut SeqDeserializer<std::vec::IntoIter<i32>, ValueError>, i32> =
+        SeqAccessIterator::new(&mut seq);
+    // Take elements until we see a zero
+    let result: Vec<i32> = iter
+        .take_while(|r| r.as_ref().map(|&x| x != 0).unwrap_or(false))
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(result, vec![1, 2, 3]);
 }
 
 #[test]
 fn test_early_termination_find() {
-    struct FindFirst(Option<i32>);
-
-    impl<'de> Deserialize<'de> for FindFirst {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct FindVisitor;
-
-            impl<'de> Visitor<'de> for FindVisitor {
-                type Value = FindFirst;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a sequence")
-                }
-
-                fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: SeqAccess<'de>,
-                {
-                    let iter: SeqAccessIterator<A, i32> = SeqAccessIterator::new(seq);
-                    // Find the first element greater than 50
-                    let found = iter
-                        .filter_map(|r| r.ok())
-                        .find(|&x| x > 50);
-                    Ok(FindFirst(found))
-                }
-            }
-
-            deserializer.deserialize_seq(FindVisitor)
-        }
-    }
-
+    // Test early termination with find by directly using SeqAccess
     let data = vec![10, 20, 30, 60, 70, 80];
-    let seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
+    let mut seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
         SeqDeserializer::new(data.into_iter());
-    let result: FindFirst = FindFirst::deserialize(seq).unwrap();
 
-    assert_eq!(result.0, Some(60));
+    let iter: SeqAccessIterator<&mut SeqDeserializer<std::vec::IntoIter<i32>, ValueError>, i32> =
+        SeqAccessIterator::new(&mut seq);
+    // Find the first element greater than 50
+    let found = iter
+        .filter_map(|r| r.ok())
+        .find(|&x| x > 50);
+
+    assert_eq!(found, Some(60));
 }
 
 #[test]
 fn test_early_termination_any() {
-    struct HasNegative(bool);
-
-    impl<'de> Deserialize<'de> for HasNegative {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct AnyVisitor;
-
-            impl<'de> Visitor<'de> for AnyVisitor {
-                type Value = HasNegative;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a sequence")
-                }
-
-                fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: SeqAccess<'de>,
-                {
-                    let iter: SeqAccessIterator<A, i32> = SeqAccessIterator::new(seq);
-                    let has_negative = iter
-                        .filter_map(|r| r.ok())
-                        .any(|x| x < 0);
-                    Ok(HasNegative(has_negative))
-                }
-            }
-
-            deserializer.deserialize_seq(AnyVisitor)
-        }
-    }
-
+    // Test early termination with any() by directly using SeqAccess
+    // Test case with negative number (early termination expected)
     let data_with_negative = vec![1, 2, -3, 4];
-    let seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
+    let mut seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
         SeqDeserializer::new(data_with_negative.into_iter());
-    let result: HasNegative = HasNegative::deserialize(seq).unwrap();
-    assert!(result.0);
 
+    let iter: SeqAccessIterator<&mut SeqDeserializer<std::vec::IntoIter<i32>, ValueError>, i32> =
+        SeqAccessIterator::new(&mut seq);
+    let has_negative = iter
+        .filter_map(|r| r.ok())
+        .any(|x| x < 0);
+    assert!(has_negative);
+
+    // Test case with all positive numbers (no early termination)
     let data_all_positive = vec![1, 2, 3, 4];
-    let seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
+    let mut seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
         SeqDeserializer::new(data_all_positive.into_iter());
-    let result: HasNegative = HasNegative::deserialize(seq).unwrap();
-    assert!(!result.0);
+
+    let iter: SeqAccessIterator<&mut SeqDeserializer<std::vec::IntoIter<i32>, ValueError>, i32> =
+        SeqAccessIterator::new(&mut seq);
+    let has_negative = iter
+        .filter_map(|r| r.ok())
+        .any(|x| x < 0);
+    assert!(!has_negative);
 }
 
 #[test]
 fn test_early_termination_into_inner() {
     // Test that we can get back the SeqAccess and continue from where we left off
-    struct PartialConsumer;
-
-    impl<'de> Deserialize<'de> for PartialConsumer {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            struct PartialVisitor;
-
-            impl<'de> Visitor<'de> for PartialVisitor {
-                type Value = PartialConsumer;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("a sequence")
-                }
-
-                fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: SeqAccess<'de>,
-                {
-                    let mut iter: SeqAccessIterator<A, i32> = SeqAccessIterator::new(seq);
-
-                    // Read first element
-                    let first = iter.next();
-                    assert!(matches!(first, Some(Ok(1))));
-
-                    // Get the inner SeqAccess back
-                    let mut inner = iter.into_inner();
-
-                    // Continue reading
-                    let second: Option<i32> = inner.next_element().unwrap();
-                    assert_eq!(second, Some(2));
-
-                    Ok(PartialConsumer)
-                }
-            }
-
-            deserializer.deserialize_seq(PartialVisitor)
-        }
-    }
-
+    // Use SeqAccess directly to avoid the Deserializer's end() validation
     let data = vec![1, 2, 3, 4];
-    let seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
+    let mut seq: SeqDeserializer<std::vec::IntoIter<i32>, ValueError> =
         SeqDeserializer::new(data.into_iter());
-    let _ = PartialConsumer::deserialize(seq).unwrap();
+
+    let mut iter: SeqAccessIterator<&mut SeqDeserializer<std::vec::IntoIter<i32>, ValueError>, i32> =
+        SeqAccessIterator::new(&mut seq);
+
+    // Read first element
+    let first = iter.next();
+    assert!(matches!(first, Some(Ok(1))));
+
+    // Get the inner SeqAccess back
+    let inner = iter.into_inner();
+
+    // Continue reading
+    let second: Option<i32> = inner.next_element().unwrap();
+    assert_eq!(second, Some(2));
 }
 
 // ============================================================================
