@@ -1254,6 +1254,90 @@ pub trait Deserializer<'de>: Sized {
         true
     }
 
+    /// Deserialize a sequence as an iterator of `T`.
+    ///
+    /// This provides an ergonomic alternative to [`deserialize_seq`] for cases
+    /// where you want to collect elements into a collection that implements
+    /// [`FromIterator`], without having to implement a custom [`Visitor`].
+    ///
+    /// The returned iterator yields `Result<T, Self::Error>` items, allowing
+    /// errors to be collected using `collect::<Result<Vec<_>, _>>()`.
+    ///
+    /// [`deserialize_seq`]: Deserializer::deserialize_seq
+    /// [`FromIterator`]: core::iter::FromIterator
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::de::{Deserialize, Deserializer};
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct Bar;
+    ///
+    /// struct Foo(Vec<Bar>);
+    ///
+    /// impl<'de> Deserialize<'de> for Foo {
+    ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    ///     where
+    ///         D: Deserializer<'de>,
+    ///     {
+    ///         let bars = deserializer
+    ///             .deserialize_iter::<Bar>()?
+    ///             .collect::<Result<_, _>>()?;
+    ///         Ok(Foo(bars))
+    ///     }
+    /// }
+    /// ```
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+    fn deserialize_iter<T>(self) -> Result<DeserializeIter<T, Self::Error>, Self::Error>
+    where
+        T: Deserialize<'de>,
+    {
+        use crate::lib::{String, Vec};
+
+        struct SeqCollectVisitor<T> {
+            _marker: PhantomData<T>,
+        }
+
+        impl<'de, T> Visitor<'de> for SeqCollectVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = Vec<Result<T, String>>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut items = Vec::new();
+                if let Some(size) = seq.size_hint() {
+                    items.reserve(size);
+                }
+                loop {
+                    match seq.next_element::<T>() {
+                        Ok(Some(value)) => items.push(Ok(value)),
+                        Ok(None) => break,
+                        Err(err) => {
+                            items.push(Err(err.to_string()));
+                            break;
+                        }
+                    }
+                }
+                Ok(items)
+            }
+        }
+
+        let items = self.deserialize_seq(SeqCollectVisitor {
+            _marker: PhantomData,
+        })?;
+        Ok(DeserializeIter::new(items))
+    }
+
     // Not public API.
     #[cfg(all(not(no_serde_derive), any(feature = "std", feature = "alloc")))]
     #[doc(hidden)]
@@ -1960,6 +2044,87 @@ where
             Some(size) => (size, Some(size)),
             None => (0, None),
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// An iterator returned by [`Deserializer::deserialize_iter`].
+///
+/// This type provides an ergonomic way to deserialize sequences as iterators,
+/// avoiding the need to implement a custom [`Visitor`] for simple collection
+/// deserialization.
+///
+/// The iterator yields `Result<T, E>` items where `E` is the deserializer's
+/// error type. The sequence elements are deserialized eagerly when
+/// `deserialize_iter` is called, but iteration over them is lazy.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer};
+///
+/// #[derive(serde::Deserialize)]
+/// struct Item(u32);
+///
+/// struct Collection(Vec<Item>);
+///
+/// impl<'de> Deserialize<'de> for Collection {
+///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+///     where
+///         D: Deserializer<'de>,
+///     {
+///         let items: Vec<Item> = deserializer
+///             .deserialize_iter()?
+///             .collect::<Result<_, _>>()?;
+///         Ok(Collection(items))
+///     }
+/// }
+/// ```
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+pub struct DeserializeIter<T, E> {
+    items: crate::lib::Vec<Result<T, crate::lib::String>>,
+    pos: usize,
+    _error: PhantomData<E>,
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<T, E> DeserializeIter<T, E> {
+    fn new(items: crate::lib::Vec<Result<T, crate::lib::String>>) -> Self {
+        DeserializeIter {
+            items,
+            pos: 0,
+            _error: PhantomData,
+        }
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<T, E> Iterator for DeserializeIter<T, E>
+where
+    E: Error,
+{
+    type Item = Result<T, E>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos < self.items.len() {
+            // Use swap_remove pattern to avoid Clone requirement
+            // Replace with a placeholder and take ownership
+            let item = core::mem::replace(
+                &mut self.items[self.pos],
+                Err(crate::lib::String::new()),
+            );
+            self.pos += 1;
+            Some(item.map_err(E::custom))
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.items.len() - self.pos;
+        (remaining, Some(remaining))
     }
 }
 
