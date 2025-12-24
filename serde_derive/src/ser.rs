@@ -56,9 +56,33 @@ pub fn expand_derive_serialize(input: &mut syn::DeriveInput) -> syn::Result<Toke
         }
     };
 
+    // Generate SerializeOwned implementation if the attribute is set
+    // Delegates to Serialize::serialize by taking a reference
+    let serialize_owned_impl = if cont.attrs.serialize_owned() && cont.attrs.remote().is_none() {
+        quote! {
+            #[automatically_derived]
+            #allow_deprecated
+            impl #impl_generics _serde::ser::SerializeOwned for #ident #ty_generics #where_clause {
+                fn serialize_owned<__S>(self, __serializer: __S) -> _serde::#private::Result<__S::Ok, __S::Error>
+                where
+                    __S: _serde::Serializer,
+                {
+                    _serde::Serialize::serialize(&self, __serializer)
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let combined = quote! {
+        #impl_block
+        #serialize_owned_impl
+    };
+
     Ok(dummy::wrap_in_const(
         cont.attrs.custom_serde_path(),
-        impl_block,
+        combined,
     ))
 }
 

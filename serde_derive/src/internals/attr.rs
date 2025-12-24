@@ -172,6 +172,8 @@ pub struct Container {
     /// Error message generated when type can't be deserialized
     expecting: Option<String>,
     non_exhaustive: bool,
+    /// Whether to generate a SerializeOwned implementation
+    serialize_owned: bool,
 }
 
 /// Styles of representing an enum.
@@ -258,6 +260,7 @@ impl Container {
         let mut serde_path = Attr::none(cx, CRATE);
         let mut expecting = Attr::none(cx, EXPECTING);
         let mut non_exhaustive = false;
+        let mut serialize_owned = BoolAttr::none(cx, SERIALIZE_OWNED);
 
         for attr in &item.attrs {
             if attr.path() != SERDE {
@@ -490,6 +493,9 @@ impl Container {
                     if let Some(s) = get_lit_str(cx, EXPECTING, &meta)? {
                         expecting.set(&meta.path, s.value());
                     }
+                } else if meta.path == SERIALIZE_OWNED {
+                    // #[serde(serialize_owned)]
+                    serialize_owned.set_true(&meta.path);
                 } else {
                     let path = meta.path.to_token_stream().to_string().replace(' ', "");
                     return Err(
@@ -541,6 +547,7 @@ impl Container {
             is_packed,
             expecting: expecting.get(),
             non_exhaustive,
+            serialize_owned: serialize_owned.get(),
         }
     }
 
@@ -616,6 +623,10 @@ impl Container {
 
     pub fn non_exhaustive(&self) -> bool {
         self.non_exhaustive
+    }
+
+    pub fn serialize_owned(&self) -> bool {
+        self.serialize_owned
     }
 }
 
