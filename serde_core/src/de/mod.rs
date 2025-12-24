@@ -1807,7 +1807,7 @@ pub trait SeqAccess<'de> {
     /// }
     /// ```
     #[inline]
-    fn deserialize_iter<T>(self) -> SeqAccessIterator<'de, Self>
+    fn deserialize_iter<T>(self) -> SeqAccessIterator<'de, Self, T>
     where
         Self: Sized,
         T: Deserialize<'de>,
@@ -2457,17 +2457,19 @@ impl Display for WithDecimalPoint {
 ///     }
 /// }
 /// ```
-pub struct SeqAccessIterator<'de, A>
+pub struct SeqAccessIterator<'de, A, T>
 where
     A: SeqAccess<'de>,
+    T: Deserialize<'de>,
 {
     seq: A,
-    _marker: PhantomData<&'de ()>,
+    _marker: PhantomData<(&'de (), T)>,
 }
 
-impl<'de, A> SeqAccessIterator<'de, A>
+impl<'de, A, T> SeqAccessIterator<'de, A, T>
 where
     A: SeqAccess<'de>,
+    T: Deserialize<'de>,
 {
     /// Creates a new `SeqAccessIterator` from a `SeqAccess`.
     pub fn new(seq: A) -> Self {
@@ -2483,7 +2485,7 @@ where
     }
 }
 
-impl<'de, A, T> Iterator for SeqAccessIterator<'de, A>
+impl<'de, A, T> Iterator for SeqAccessIterator<'de, A, T>
 where
     A: SeqAccess<'de>,
     T: Deserialize<'de>,
