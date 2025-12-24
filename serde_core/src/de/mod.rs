@@ -1291,7 +1291,7 @@ pub trait Deserializer<'de>: Sized {
     #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     fn deserialize_iter<T>(self) -> Result<DeserializeIter<'de, T, Self::Error>, Self::Error>
     where
-        T: Deserialize<'de>,
+        T: Deserialize<'de> + 'de,
         Self::Error: 'de,
     {
         struct DeserializeIterVisitor<T, E> {
@@ -1311,7 +1311,7 @@ pub trait Deserializer<'de>: Sized {
 
             fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
             where
-                A: SeqAccess<'de>,
+                A: SeqAccess<'de> + 'de,
             {
                 // SAFETY: All SeqAccess implementations in practice satisfy A: 'de
                 // because they are created by the deserializer for the duration of
