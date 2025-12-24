@@ -1,6 +1,6 @@
 use crate::lib::*;
 
-use crate::ser::{Error, Serialize, SerializeTuple, Serializer};
+use crate::ser::{Error, Serialize, SerializeOwned, SerializeTuple, Serializer};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1042,4 +1042,369 @@ atomic_impl! {
 atomic_impl! {
     AtomicI64 "64"
     AtomicU64 "64"
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SerializeOwned implementations for standard library types
+////////////////////////////////////////////////////////////////////////////////
+
+/// `SerializeOwned` implementation for `String` that takes ownership,
+/// avoiding the need to borrow the string data during serialization.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl SerializeOwned for String {
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self)
+    }
+}
+
+/// `SerializeOwned` implementation for `CString` that takes ownership.
+#[cfg(any(feature = "std", all(not(no_core_cstr), feature = "alloc")))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl SerializeOwned for CString {
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(self.to_bytes())
+    }
+}
+
+/// `SerializeOwned` implementation for `Vec<T>` that takes ownership,
+/// allowing elements to be serialized by value if they implement `SerializeOwned`.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<T> SerializeOwned for Vec<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `Box<T>` that takes ownership,
+/// allowing the inner value to be serialized by value.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<T> SerializeOwned for Box<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (*self).serialize(serializer)
+    }
+}
+
+/// `SerializeOwned` implementation for `VecDeque<T>` that takes ownership.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<T> SerializeOwned for VecDeque<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `LinkedList<T>` that takes ownership.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<T> SerializeOwned for LinkedList<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `BinaryHeap<T>` that takes ownership.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<T> SerializeOwned for BinaryHeap<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `BTreeSet<T>` that takes ownership.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<T> SerializeOwned for BTreeSet<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `HashSet<T>` that takes ownership.
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl<T, H> SerializeOwned for HashSet<T, H>
+where
+    T: Serialize,
+    H: BuildHasher,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `BTreeMap<K, V>` that takes ownership.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<K, V> SerializeOwned for BTreeMap<K, V>
+where
+    K: Serialize,
+    V: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_map(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `HashMap<K, V>` that takes ownership.
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl<K, V, H> SerializeOwned for HashMap<K, V, H>
+where
+    K: Serialize,
+    V: Serialize,
+    H: BuildHasher,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_map(self)
+    }
+}
+
+/// `SerializeOwned` implementation for `Option<T>` that takes ownership.
+impl<T> SerializeOwned for Option<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Some(value) => serializer.serialize_some(&value),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
+/// `SerializeOwned` implementation for `Result<T, E>` that takes ownership.
+#[cfg(feature = "result")]
+#[cfg_attr(docsrs, doc(cfg(feature = "result")))]
+impl<T, E> SerializeOwned for Result<T, E>
+where
+    T: Serialize,
+    E: Serialize,
+{
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Result::Ok(value) => serializer.serialize_newtype_variant("Result", 0, "Ok", &value),
+            Result::Err(value) => serializer.serialize_newtype_variant("Result", 1, "Err", &value),
+        }
+    }
+}
+
+/// `SerializeOwned` implementation for `Cow<'a, T>` that takes ownership.
+/// When the Cow is Owned, the owned value can be used directly.
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+impl<'a, T> SerializeOwned for Cow<'a, T>
+where
+    T: ?Sized + Serialize + ToOwned,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Cow::Borrowed(borrowed) => borrowed.serialize(serializer),
+            Cow::Owned(owned) => owned.borrow().serialize(serializer),
+        }
+    }
+}
+
+/// `SerializeOwned` implementation for `Rc<T>`.
+///
+/// This impl requires the [`"rc"`] Cargo feature of Serde.
+///
+/// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
+#[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))))]
+impl<T> SerializeOwned for Rc<T>
+where
+    T: ?Sized + Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (*self).serialize(serializer)
+    }
+}
+
+/// `SerializeOwned` implementation for `Arc<T>`.
+///
+/// This impl requires the [`"rc"`] Cargo feature of Serde.
+///
+/// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
+#[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))))]
+impl<T> SerializeOwned for Arc<T>
+where
+    T: ?Sized + Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (*self).serialize(serializer)
+    }
+}
+
+/// `SerializeOwned` implementation for `PathBuf` that takes ownership.
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl SerializeOwned for PathBuf {
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.as_path().serialize(serializer)
+    }
+}
+
+/// `SerializeOwned` implementation for `OsString` that takes ownership.
+#[cfg(all(feature = "std", any(unix, windows)))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "std", any(unix, windows)))))]
+impl SerializeOwned for OsString {
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.as_os_str().serialize(serializer)
+    }
+}
+
+/// `SerializeOwned` implementation for `Bound<T>` that takes ownership.
+impl<T> SerializeOwned for Bound<T>
+where
+    T: Serialize,
+{
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Bound::Unbounded => serializer.serialize_unit_variant("Bound", 0, "Unbounded"),
+            Bound::Included(value) => {
+                serializer.serialize_newtype_variant("Bound", 1, "Included", &value)
+            }
+            Bound::Excluded(value) => {
+                serializer.serialize_newtype_variant("Bound", 2, "Excluded", &value)
+            }
+        }
+    }
+}
+
+/// `SerializeOwned` implementation for `Wrapping<T>` that takes ownership.
+impl<T> SerializeOwned for Wrapping<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+/// `SerializeOwned` implementation for `Saturating<T>` that takes ownership.
+#[cfg(not(no_core_num_saturating))]
+impl<T> SerializeOwned for Saturating<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+/// `SerializeOwned` implementation for `Reverse<T>` that takes ownership.
+impl<T> SerializeOwned for Reverse<T>
+where
+    T: Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
 }
