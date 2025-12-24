@@ -1939,6 +1939,7 @@ pub trait IntoSeqIterator<'de>: SeqAccess<'de> {
     /// exhausted. Errors during deserialization are returned as `Err` variants.
     fn into_seq_iter<T>(self) -> SeqAccessIterator<'de, Self, T>
     where
+        Self: Sized,
         T: Deserialize<'de>;
 }
 
