@@ -1810,6 +1810,195 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// An iterator that wraps a [`SeqAccess`] and yields deserialized elements.
+///
+/// This type provides an `Iterator` interface over a `SeqAccess`, allowing
+/// sequence deserialization to be performed using iterator combinators like
+/// `collect()`, `map()`, `filter()`, etc.
+///
+/// Each call to `next()` returns `Some(Ok(value))` for each element in the
+/// sequence, `Some(Err(error))` if deserialization fails, or `None` when the
+/// sequence is exhausted.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer, SeqAccess, SeqIter, Visitor};
+/// use std::fmt;
+/// use std::marker::PhantomData;
+///
+/// struct MyVec<T>(Vec<T>);
+///
+/// impl<'de, T> Deserialize<'de> for MyVec<T>
+/// where
+///     T: Deserialize<'de>,
+/// {
+///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+///     where
+///         D: Deserializer<'de>,
+///     {
+///         struct MyVecVisitor<T>(PhantomData<T>);
+///
+///         impl<'de, T> Visitor<'de> for MyVecVisitor<T>
+///         where
+///             T: Deserialize<'de>,
+///         {
+///             type Value = MyVec<T>;
+///
+///             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+///                 formatter.write_str("a sequence")
+///             }
+///
+///             fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+///             where
+///                 A: SeqAccess<'de>,
+///             {
+///                 // SAFETY: SeqAccess implementations satisfy A: 'de in practice.
+///                 // See architecture.md for explanation of this pattern.
+///                 let iter = unsafe { SeqIter::<A, T>::new_unchecked(seq) };
+///                 let vec: Result<Vec<T>, A::Error> = iter.collect();
+///                 Ok(MyVec(vec?))
+///             }
+///         }
+///
+///         deserializer.deserialize_seq(MyVecVisitor(PhantomData))
+///     }
+/// }
+/// ```
+///
+/// # Safety
+///
+/// The [`new_unchecked`] constructor is unsafe because the `SeqAccess` trait
+/// does not include a `'de` lifetime bound on the `SeqAccess` type itself.
+/// However, in practice, all `SeqAccess` implementations satisfy this bound
+/// because they are created by the deserializer for a single call and only
+/// reference input data with lifetime `'de`.
+///
+/// [`new_unchecked`]: SeqIter::new_unchecked
+pub struct SeqIter<'de, A, T>
+where
+    A: SeqAccess<'de>,
+{
+    seq: A,
+    finished: bool,
+    marker: PhantomData<(&'de (), T)>,
+}
+
+impl<'de, A, T> SeqIter<'de, A, T>
+where
+    A: SeqAccess<'de> + 'de,
+    T: Deserialize<'de>,
+{
+    /// Creates a new `SeqIter` from a `SeqAccess`.
+    ///
+    /// This constructor requires `A: 'de`, which is the correct lifetime bound
+    /// but cannot be expressed in the `Visitor::visit_seq` trait method due to
+    /// serde's trait design. For use in `Visitor` implementations, see
+    /// [`new_unchecked`].
+    ///
+    /// [`new_unchecked`]: SeqIter::new_unchecked
+    #[inline]
+    pub fn new(seq: A) -> Self {
+        SeqIter {
+            seq,
+            finished: false,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, A, T> SeqIter<'de, A, T>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    /// Creates a new `SeqIter` from a `SeqAccess` without requiring `A: 'de`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the `SeqAccess` type `A` lives at least as
+    /// long as `'de`. This is always true for `SeqAccess` implementations
+    /// passed to `Visitor::visit_seq` because they are created by the
+    /// deserializer and only reference input data with lifetime `'de`.
+    ///
+    /// This unsafe constructor exists because the `Visitor` trait's `visit_seq`
+    /// method has `A: SeqAccess<'de>` but not `A: 'de`, even though all
+    /// implementations satisfy the latter. See architecture.md for more details.
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// # use serde::de::{SeqAccess, SeqIter, Visitor, Deserialize};
+    /// # use std::fmt;
+    /// # use std::marker::PhantomData;
+    /// #
+    /// # struct MyVisitor<T>(PhantomData<T>);
+    /// #
+    /// # impl<'de, T: Deserialize<'de>> Visitor<'de> for MyVisitor<T> {
+    /// #     type Value = Vec<T>;
+    /// #
+    /// #     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    /// #         f.write_str("a sequence")
+    /// #     }
+    /// #
+    /// fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    /// where
+    ///     A: SeqAccess<'de>,
+    /// {
+    ///     // SAFETY: SeqAccess implementations always satisfy A: 'de in practice
+    ///     let iter = unsafe { SeqIter::<A, T>::new_unchecked(seq) };
+    ///     iter.collect()
+    /// }
+    /// # }
+    /// ```
+    #[inline]
+    pub unsafe fn new_unchecked(seq: A) -> Self {
+        SeqIter {
+            seq,
+            finished: false,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, A, T> Iterator for SeqIter<'de, A, T>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    type Item = Result<T, A::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        match self.seq.next_element() {
+            Ok(Some(value)) => Some(Ok(value)),
+            Ok(None) => {
+                self.finished = true;
+                None
+            }
+            Err(err) => {
+                self.finished = true;
+                Some(Err(err))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.finished {
+            return (0, Some(0));
+        }
+        match self.seq.size_hint() {
+            Some(size) => (size, Some(size)),
+            None => (0, None),
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// Provides a `Visitor` access to each entry of a map in the input.
 ///
 /// This is a trait that a `Deserializer` passes to a `Visitor` implementation.
