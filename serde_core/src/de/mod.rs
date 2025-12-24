@@ -1254,6 +1254,89 @@ pub trait Deserializer<'de>: Sized {
         true
     }
 
+    /// Deserialize a sequence as an iterator, allowing lazy element-by-element
+    /// deserialization.
+    ///
+    /// This method provides a more ergonomic way to deserialize sequences by
+    /// returning an iterator instead of requiring a visitor implementation.
+    /// It inverts the control flow from the traditional visitor pattern to a
+    /// pull-based iterator pattern.
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::de::{Deserialize, Deserializer};
+    ///
+    /// struct Foo(Vec<u32>);
+    ///
+    /// impl<'de> Deserialize<'de> for Foo {
+    ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    ///     where
+    ///         D: Deserializer<'de>,
+    ///     {
+    ///         let values = deserializer
+    ///             .deserialize_iter::<u32>()?
+    ///             .collect::<Result<Vec<_>, _>>()?;
+    ///         Ok(Foo(values))
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Implementation
+    ///
+    /// The default implementation calls `deserialize_seq` with a visitor that
+    /// captures the `SeqAccess` and wraps it in a [`DeserializeIter`]. Deserializer
+    /// implementations may override this for more efficient behavior.
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+    fn deserialize_iter<T>(self) -> Result<DeserializeIter<'de, T, Self::Error>, Self::Error>
+    where
+        T: Deserialize<'de>,
+        Self::Error: 'de,
+    {
+        struct DeserializeIterVisitor<T, E> {
+            marker: PhantomData<(T, E)>,
+        }
+
+        impl<'de, T, E> Visitor<'de> for DeserializeIterVisitor<T, E>
+        where
+            T: Deserialize<'de>,
+            E: Error + 'de,
+        {
+            type Value = DeserializeIter<'de, T, E>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                // SAFETY: All SeqAccess implementations in practice satisfy A: 'de
+                // because they are created by the deserializer for the duration of
+                // a single call and only reference input data with lifetime 'de.
+                // The bound cannot be expressed in the trait due to historical
+                // design decisions predating GATs.
+                //
+                // Additionally, when a Deserializer calls visit_seq, A::Error equals
+                // the deserializer's error type (E in our case). The Visitor trait
+                // cannot express this constraint, but it's always true in practice.
+                // We transmute the error type to satisfy the type system.
+                let iter = unsafe { DeserializeIter::<T, A::Error>::new_unchecked(seq) };
+                // SAFETY: DeserializeIter<'de, T, E1> and DeserializeIter<'de, T, E2>
+                // have the same memory layout because they both contain a boxed trait
+                // object. The actual error type is handled by the boxed wrapper.
+                // In practice, A::Error = E when called by a deserializer.
+                Ok(unsafe { mem::transmute::<DeserializeIter<'de, T, A::Error>, DeserializeIter<'de, T, E>>(iter) })
+            }
+        }
+
+        self.deserialize_seq(DeserializeIterVisitor::<T, Self::Error> {
+            marker: PhantomData,
+        })
+    }
+
     // Not public API.
     #[cfg(all(not(no_serde_derive), any(feature = "std", feature = "alloc")))]
     #[doc(hidden)]
@@ -1949,6 +2032,162 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// A lazy iterator over a sequence being deserialized.
+///
+/// This type enables the [`Deserializer::deserialize_iter`] method to return
+/// an iterator that lazily deserializes elements. It wraps a boxed
+/// element-producer that yields elements of type `T`.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer};
+///
+/// struct Foo(Vec<u32>);
+///
+/// impl<'de> Deserialize<'de> for Foo {
+///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+///     where
+///         D: Deserializer<'de>,
+///     {
+///         let values = deserializer
+///             .deserialize_iter::<u32>()?
+///             .collect::<Result<Vec<_>, _>>()?;
+///         Ok(Foo(values))
+///     }
+/// }
+/// ```
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+pub struct DeserializeIter<'de, T, E> {
+    inner: Box<dyn ErasedElementIter<'de, T, E> + 'de>,
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, T, E> DeserializeIter<'de, T, E>
+where
+    T: Deserialize<'de>,
+    E: Error + 'de,
+{
+    /// Creates a new `DeserializeIter` from a `SeqAccess`.
+    ///
+    /// This constructor requires the additional bound `A: 'de` which is always
+    /// satisfied in practice but cannot be expressed in the `Visitor` trait.
+    /// For use within `Visitor::visit_seq` implementations where this bound
+    /// cannot be expressed, use [`new_unchecked`] instead.
+    ///
+    /// [`new_unchecked`]: DeserializeIter::new_unchecked
+    #[inline]
+    pub fn new<A>(seq: A) -> Self
+    where
+        A: SeqAccess<'de, Error = E> + 'de,
+    {
+        DeserializeIter {
+            inner: Box::new(ErasedSeqAccessWrapper { seq, marker: PhantomData }),
+        }
+    }
+
+    /// Creates a new `DeserializeIter` from a `SeqAccess` without the `A: 'de` bound.
+    ///
+    /// # Safety
+    ///
+    /// This is safe to call when `A` is obtained from a `Visitor::visit_seq`
+    /// call, because all `SeqAccess` implementations in practice satisfy
+    /// `A: 'de`. The bound cannot be expressed in the trait due to historical
+    /// design decisions predating GATs (Generic Associated Types).
+    ///
+    /// Callers must ensure that the `SeqAccess` implementation does not outlive
+    /// the data it references.
+    #[inline]
+    pub unsafe fn new_unchecked<A>(seq: A) -> DeserializeIter<'de, T, A::Error>
+    where
+        A: SeqAccess<'de>,
+        A::Error: 'de,
+    {
+        // SAFETY: The caller guarantees A: 'de. We transmute to add this bound
+        // that the type system cannot verify but we know to be true.
+        // The memory layout of Box<dyn Trait> is the same regardless of
+        // additional lifetime bounds.
+        let wrapper = ErasedSeqAccessWrapper::<A, T, A::Error> { seq, marker: PhantomData };
+        let boxed: Box<dyn ErasedElementIter<'de, T, A::Error> + 'de> = {
+            // First, create a Box without the lifetime bound
+            let boxed_no_lifetime: Box<dyn ErasedElementIter<'de, T, A::Error>> = Box::new(wrapper);
+            // Then transmute to add the 'de bound
+            mem::transmute(boxed_no_lifetime)
+        };
+        DeserializeIter { inner: boxed }
+    }
+
+    /// Returns the number of elements remaining in the sequence, if known.
+    #[inline]
+    pub fn size_hint(&self) -> Option<usize> {
+        self.inner.erased_size_hint()
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, T, E> Iterator for DeserializeIter<'de, T, E>
+where
+    T: Deserialize<'de>,
+    E: Error + 'de,
+{
+    type Item = Result<T, E>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.erased_next_element() {
+            Ok(Some(value)) => Some(Ok(value)),
+            Ok(None) => None,
+            Err(err) => Some(Err(err)),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.inner.erased_size_hint() {
+            Some(size) => (size, Some(size)),
+            None => (0, None),
+        }
+    }
+}
+
+/// Internal wrapper for type-erased element iteration.
+#[cfg(any(feature = "std", feature = "alloc"))]
+struct ErasedSeqAccessWrapper<A, T, E> {
+    seq: A,
+    marker: PhantomData<(T, E)>,
+}
+
+/// Internal trait for type-erased element iteration.
+///
+/// This trait is object-safe because it uses concrete types for T and E
+/// rather than generic methods.
+#[cfg(any(feature = "std", feature = "alloc"))]
+trait ErasedElementIter<'de, T, E> {
+    fn erased_next_element(&mut self) -> Result<Option<T>, E>;
+    fn erased_size_hint(&self) -> Option<usize>;
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, A, T, E> ErasedElementIter<'de, T, E> for ErasedSeqAccessWrapper<A, T, E>
+where
+    A: SeqAccess<'de, Error = E>,
+    T: Deserialize<'de>,
+    E: Error,
+{
+    #[inline]
+    fn erased_next_element(&mut self) -> Result<Option<T>, E> {
+        self.seq.next_element()
+    }
+
+    #[inline]
+    fn erased_size_hint(&self) -> Option<usize> {
+        self.seq.size_hint()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// Provides a `Visitor` access to each entry of a map in the input.
 ///
 /// This is a trait that a `Deserializer` passes to a `Visitor` implementation.
@@ -2624,5 +2863,65 @@ mod tests {
         // SAFETY: MockSeqAccess satisfies 'de bound in this test context
         let iter: SeqIter<'_, _, i32> = unsafe { SeqIter::new_unchecked(seq) };
         assert_eq!(iter.size_hint(), Some(1));
+    }
+
+    // Tests for DeserializeIter
+
+    #[test]
+    fn test_deserialize_iter_new() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(alloc::vec![1, 2, 3]);
+        let iter: DeserializeIter<'_, i32, MockError> = DeserializeIter::new(seq);
+        assert_eq!(iter.size_hint(), Some(3));
+    }
+
+    #[test]
+    fn test_deserialize_iter_empty() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(Vec::new());
+        let mut iter: DeserializeIter<'_, i32, MockError> = DeserializeIter::new(seq);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_deserialize_iter_iteration() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(alloc::vec![10, 20, 30]);
+        let iter: DeserializeIter<'_, i32, MockError> = DeserializeIter::new(seq);
+        let results: Vec<i32> = iter.map(|r| r.unwrap()).collect();
+        assert_eq!(results, alloc::vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_deserialize_iter_iterator_size_hint() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(alloc::vec![1, 2, 3]);
+        let iter: DeserializeIter<'_, i32, MockError> = DeserializeIter::new(seq);
+        assert_eq!(Iterator::size_hint(&iter), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_deserialize_iter_new_unchecked() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(alloc::vec![42, 43]);
+        // SAFETY: MockSeqAccess satisfies 'de bound in this test context
+        let iter: DeserializeIter<'_, i32, MockError> = unsafe { DeserializeIter::new_unchecked(seq) };
+        assert_eq!(iter.size_hint(), Some(2));
+    }
+
+    #[test]
+    fn test_deserialize_iter_collect() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(alloc::vec![5, 10, 15]);
+        let iter: DeserializeIter<'_, i32, MockError> = DeserializeIter::new(seq);
+        let collected: Result<Vec<i32>, MockError> = iter.collect();
+        assert_eq!(collected.unwrap(), alloc::vec![5, 10, 15]);
+    }
+
+    #[test]
+    fn test_deserialize_iter_size_hint_decreases() {
+        let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(alloc::vec![1, 2, 3]);
+        let mut iter: DeserializeIter<'_, i32, MockError> = DeserializeIter::new(seq);
+        assert_eq!(iter.size_hint(), Some(3));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), Some(2));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), Some(1));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), Some(0));
     }
 }
