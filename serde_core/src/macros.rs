@@ -37,7 +37,7 @@
 /// #     forward_to_deserialize_any! {
 /// #         i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 /// #         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-/// #         tuple_struct map struct enum identifier ignored_any
+/// #         tuple_struct map struct enum identifier ignored_any iter
 /// #     }
 /// # }
 /// ```
@@ -67,7 +67,7 @@
 ///     forward_to_deserialize_any! {
 ///         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 ///         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-///         tuple_struct map struct enum identifier ignored_any
+///         tuple_struct map struct enum identifier ignored_any iter
 ///     }
 /// }
 /// ```
@@ -98,10 +98,12 @@
 ///     <W: Visitor<'q>>
 ///     bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 ///     bytes byte_buf option unit unit_struct newtype_struct seq tuple
-///     tuple_struct map struct enum identifier ignored_any
+///     tuple_struct map struct enum identifier ignored_any iter
 /// }
 /// # }
 /// ```
+///
+/// Note: The `iter` method requires the `std` or `alloc` feature to be enabled.
 ///
 /// [`Deserializer`]: crate::Deserializer
 /// [`Visitor`]: crate::de::Visitor
@@ -130,6 +132,54 @@ macro_rules! forward_to_deserialize_any_method {
                 let _ = $arg;
             )*
             self.deserialize_any(visitor)
+        }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! forward_to_deserialize_any_iter_method {
+    (<$l:tt>) => {
+        #[cfg(any(feature = "std", feature = "alloc"))]
+        #[inline]
+        fn deserialize_iter<T>(self) -> $crate::__private::Result<::alloc::vec::Vec<T>, <Self as $crate::de::Deserializer<$l>>::Error>
+        where
+            T: $crate::de::Deserialize<$l>,
+        {
+            use ::core::marker::PhantomData;
+
+            struct IterVisitor<T> {
+                _marker: PhantomData<fn() -> T>,
+            }
+
+            impl<$l, T> $crate::de::Visitor<$l> for IterVisitor<T>
+            where
+                T: $crate::de::Deserialize<$l>,
+            {
+                type Value = ::alloc::vec::Vec<T>;
+
+                fn expecting(&self, formatter: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+                    formatter.write_str("a sequence")
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> $crate::__private::Result<Self::Value, A::Error>
+                where
+                    A: $crate::de::SeqAccess<$l>,
+                {
+                    let mut results = ::alloc::vec::Vec::new();
+                    if let Some(size) = seq.size_hint() {
+                        results.reserve(size);
+                    }
+                    while let Some(value) = seq.next_element::<T>()? {
+                        results.push(value);
+                    }
+                    Ok(results)
+                }
+            }
+
+            self.deserialize_any(IterVisitor::<T> {
+                _marker: PhantomData,
+            })
         }
     };
 }
@@ -226,5 +276,8 @@ macro_rules! forward_to_deserialize_any_helper {
     };
     (ignored_any<$l:tt, $v:ident>) => {
         forward_to_deserialize_any_method!{deserialize_ignored_any<$l, $v>()}
+    };
+    (iter<$l:tt, $v:ident>) => {
+        forward_to_deserialize_any_iter_method!{<$l>}
     };
 }
