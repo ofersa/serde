@@ -1810,6 +1810,106 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// An iterator adapter that wraps a [`SeqAccess`] and yields deserialized elements.
+///
+/// This struct allows using a `SeqAccess` as a standard Rust iterator, enabling
+/// the use of iterator combinators like `collect()`, `map()`, `filter()`, etc.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer, SeqAccess, SeqAccessIterator, Visitor};
+/// use std::fmt;
+///
+/// struct Foo(Vec<i32>);
+///
+/// impl<'de> Deserialize<'de> for Foo {
+///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+///     where
+///         D: Deserializer<'de>,
+///     {
+///         struct FooVisitor;
+///
+///         impl<'de> Visitor<'de> for FooVisitor {
+///             type Value = Foo;
+///
+///             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+///                 formatter.write_str("a sequence of integers")
+///             }
+///
+///             fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+///             where
+///                 A: SeqAccess<'de>,
+///             {
+///                 let iter = SeqAccessIterator::new(seq);
+///                 let values: Result<Vec<i32>, _> = iter.collect();
+///                 Ok(Foo(values?))
+///             }
+///         }
+///
+///         deserializer.deserialize_seq(FooVisitor)
+///     }
+/// }
+/// ```
+///
+/// # Lifetime
+///
+/// The `'de` lifetime of this struct is the lifetime of data that may be
+/// borrowed by deserialized sequence elements. See the page [Understanding
+/// deserializer lifetimes] for a more detailed explanation of these lifetimes.
+///
+/// [Understanding deserializer lifetimes]: https://serde.rs/lifetimes.html
+pub struct SeqAccessIterator<'de, A, T>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    seq: A,
+    _marker: PhantomData<(&'de (), T)>,
+}
+
+impl<'de, A, T> SeqAccessIterator<'de, A, T>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    /// Creates a new `SeqAccessIterator` from a `SeqAccess`.
+    #[inline]
+    pub fn new(seq: A) -> Self {
+        SeqAccessIterator {
+            seq,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, A, T> Iterator for SeqAccessIterator<'de, A, T>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    type Item = Result<T, A::Error>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.seq.next_element() {
+            Ok(Some(value)) => Some(Ok(value)),
+            Ok(None) => None,
+            Err(err) => Some(Err(err)),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.seq.size_hint() {
+            Some(size) => (size, Some(size)),
+            None => (0, None),
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// Provides a `Visitor` access to each entry of a map in the input.
 ///
 /// This is a trait that a `Deserializer` passes to a `Visitor` implementation.
