@@ -142,3 +142,28 @@ Serde has a universal data model that all formats translate to/from:
 
 ### Stateless Serialization
 Serializers and Deserializers should be stateless where possible. Complex state belongs in wrapper types, not the format implementation.
+
+### Lifetime Bounds and the Visitor Trait
+The `Visitor` trait methods like `visit_seq<A>` have bounds like `A: SeqAccess<'de>` but do NOT include `A: 'de`. However, in practice, all `SeqAccess` implementations satisfy `A: 'de` because they're created by the deserializer for the duration of a single call and only reference input data with lifetime `'de`.
+
+**Important pattern**: When you need to store a `SeqAccess` in a struct that requires `'de` lifetime bounds:
+1. You CANNOT add `+ 'de` to the impl's where clause because the trait doesn't have it (E0276: stricter requirements than trait)
+2. You CANNOT remove the `+ 'de` from your struct because the borrow checker needs it (E0309: may not live long enough)
+3. **Solution**: Use `unsafe` with a separate constructor like `new_unchecked` that doesn't require `A: 'de`, and document that serde's design guarantees the bound is satisfied in practice.
+
+Example:
+```rust
+// Safe constructor requires the bound
+fn new<A: SeqAccess<'de> + 'de>(seq: A) -> Self { ... }
+
+// Unsafe constructor for use in Visitor impl
+unsafe fn new_unchecked<A: SeqAccess<'de>>(seq: A) -> Self { ... }
+
+// In Visitor impl:
+fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<...> {
+    // SAFETY: SeqAccess impls always satisfy A: 'de in practice
+    unsafe { Ok(MyType::new_unchecked(seq)) }
+}
+```
+
+This is a known limitation of serde's trait design. The Visitor trait was designed before Rust had GATs (Generic Associated Types), which would have allowed expressing this bound correctly.
