@@ -2930,7 +2930,7 @@ mod tests {
     fn test_deserialize_iter_new_unchecked() {
         let seq: MockSeqAccess<'_, i32> = MockSeqAccess::new(alloc::vec![42, 43]);
         // SAFETY: MockSeqAccess satisfies 'de bound in this test context
-        let iter: DeserializeIter<'_, i32, MockError> = unsafe { DeserializeIter::new_unchecked(seq) };
+        let iter: DeserializeIter<'_, i32, MockError> = unsafe { DeserializeIter::<i32, MockError>::new_unchecked(seq) };
         assert_eq!(iter.size_hint(), Some(2));
     }
 
