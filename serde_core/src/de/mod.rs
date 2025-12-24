@@ -1183,6 +1183,74 @@ pub trait Deserializer<'de>: Sized {
     where
         V: Visitor<'de>;
 
+    /// Deserialize a sequence as an iterator, allowing lazy evaluation.
+    ///
+    /// This method provides a more ergonomic way to deserialize sequences by
+    /// returning an iterator that yields each element. This is particularly
+    /// useful when deserializing into types that implement [`FromIterator`],
+    /// as it allows using standard iterator methods like [`collect`].
+    ///
+    /// The returned iterator wraps a [`SeqAccess`] in a [`SeqAccessIterator`],
+    /// yielding `Result<T, Self::Error>` for each element. This means errors
+    /// are propagated through the iterator, and you can use
+    /// `iter.collect::<Result<Vec<_>, _>>()` to collect all elements while
+    /// handling errors.
+    ///
+    /// [`FromIterator`]: std::iter::FromIterator
+    /// [`collect`]: Iterator::collect
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::Deserialize;
+    /// use serde::de::Deserializer;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Bar;
+    ///
+    /// struct Foo(Vec<Bar>);
+    ///
+    /// impl<'de> Deserialize<'de> for Foo {
+    ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    ///     where
+    ///         D: Deserializer<'de>,
+    ///     {
+    ///         let bars = deserializer
+    ///             .deserialize_iter::<Bar>()?
+    ///             .collect::<Result<_, _>>()?;
+    ///         Ok(Foo(bars))
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// The default implementation returns an iterator that yields an error,
+    /// because Rust's type system prevents returning an iterator that captures
+    /// the [`SeqAccess`] from within a visitor. Deserializer implementations
+    /// that want to support this method should provide their own implementation
+    /// that can return an iterator over their internal sequence representation.
+    ///
+    /// [`deserialize_seq`]: Deserializer::deserialize_seq
+    fn deserialize_iter<T>(self) -> Result<SeqAccessIterator<'de, IterSeqAccess<'de, Self::Error>, T>, Self::Error>
+    where
+        T: Deserialize<'de>,
+    {
+        // The default implementation returns an error because the visitor pattern
+        // used by deserialize_seq cannot return an iterator that outlives the
+        // visit_seq call. Deserializer implementations that want to support
+        // deserialize_iter should provide their own implementation.
+        //
+        // The error is returned as an iterator that yields the error on first
+        // iteration, rather than returning Err immediately. This allows the
+        // caller to use the iterator API consistently.
+        let error = Error::custom(
+            "deserialize_iter is not supported by this deserializer",
+        );
+        let seq_access = IterSeqAccess::with_error(error);
+        Ok(SeqAccessIterator::new(seq_access))
+    }
+
     /// Determine whether `Deserialize` implementations should expect to
     /// deserialize their human-readable form.
     ///
@@ -1924,6 +1992,81 @@ where
             Some(size) => (size, Some(size)),
             None => (0, None),
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// A wrapper around a [`SeqAccess`] that provides a concrete error type.
+///
+/// This type is used internally by [`Deserializer::deserialize_iter`] to wrap
+/// the `SeqAccess` provided by the deserializer. It allows the iterator to have
+/// a concrete return type while still working with any deserializer.
+///
+/// This type is not intended to be constructed directly by users. It is created
+/// automatically by the default implementation of `deserialize_iter`.
+///
+/// # Lifetime
+///
+/// The `'de` lifetime is the lifetime of data that may be borrowed by the
+/// deserialized values.
+pub struct IterSeqAccess<'de, E>
+where
+    E: Error,
+{
+    /// Stored error to return on next access, if any.
+    error: Option<E>,
+    /// Size hint, if known.
+    size: Option<usize>,
+    marker: PhantomData<&'de ()>,
+}
+
+impl<'de, E> IterSeqAccess<'de, E>
+where
+    E: Error,
+{
+    /// Creates a new empty `IterSeqAccess`.
+    ///
+    /// This returns an iterator that yields no elements.
+    pub fn empty() -> Self {
+        IterSeqAccess {
+            error: None,
+            size: Some(0),
+            marker: PhantomData,
+        }
+    }
+
+    /// Creates a new `IterSeqAccess` that will yield a single error.
+    ///
+    /// This is used by the default implementation of `deserialize_iter` to
+    /// indicate that the deserializer does not support this method.
+    pub fn with_error(error: E) -> Self {
+        IterSeqAccess {
+            error: Some(error),
+            size: None,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, E> SeqAccess<'de> for IterSeqAccess<'de, E>
+where
+    E: Error,
+{
+    type Error = E;
+
+    fn next_element_seed<T>(&mut self, _seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        match self.error.take() {
+            Some(err) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        self.size
     }
 }
 
