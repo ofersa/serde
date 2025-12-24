@@ -1254,6 +1254,68 @@ pub trait Deserializer<'de>: Sized {
         true
     }
 
+    /// Deserialize a sequence as an iterator over elements of type `T`.
+    ///
+    /// This method provides a more ergonomic way to deserialize sequences
+    /// compared to implementing a custom `Visitor`. Instead of implementing
+    /// `visit_seq` and manually iterating through the `SeqAccess`, you get
+    /// back a standard Rust `Iterator` that yields `Result<T, Self::Error>`.
+    ///
+    /// This allows using iterator combinators like `collect()`, `map()`,
+    /// `filter()`, etc. for sequence deserialization.
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::de::{Deserialize, Deserializer};
+    ///
+    /// #[derive(Debug)]
+    /// struct Bar(i32);
+    ///
+    /// impl<'de> Deserialize<'de> for Bar {
+    ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    ///     where
+    ///         D: Deserializer<'de>,
+    ///     {
+    ///         Ok(Bar(i32::deserialize(deserializer)?))
+    ///     }
+    /// }
+    ///
+    /// struct Foo(Vec<Bar>);
+    ///
+    /// impl<'de> Deserialize<'de> for Foo {
+    ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    ///     where
+    ///         D: Deserializer<'de>,
+    ///     {
+    ///         let bars = deserializer
+    ///             .deserialize_iter::<Bar>()?
+    ///             .collect::<Result<Vec<_>, _>>()?;
+    ///         Ok(Foo(bars))
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # How It Works
+    ///
+    /// This method inverts the control flow of the visitor pattern. Instead of
+    /// the deserializer calling your `visit_seq` method with a `SeqAccess`,
+    /// this method captures the `SeqAccess` and wraps it in a `SeqIter` that
+    /// you can iterate over at your own pace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the deserializer doesn't find a sequence at the
+    /// current position in the input.
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+    fn deserialize_iter<T>(self) -> Result<DeserializeIter<'de, T, Self::Error>, Self::Error>
+    where
+        T: Deserialize<'de>,
+    {
+        self.deserialize_seq(SeqCaptureVisitor::<T, Self::Error>(PhantomData))
+    }
+
     // Not public API.
     #[cfg(all(not(no_serde_derive), any(feature = "std", feature = "alloc")))]
     #[doc(hidden)]
@@ -1999,6 +2061,190 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// An iterator returned by [`Deserializer::deserialize_iter`] that yields
+/// deserialized elements of type `T`.
+///
+/// This is a type-erased iterator that wraps the internal `SeqAccess` and
+/// provides a standard `Iterator` interface for sequence deserialization.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer};
+///
+/// struct MyVec<T>(Vec<T>);
+///
+/// impl<'de, T: Deserialize<'de>> Deserialize<'de> for MyVec<T> {
+///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+///     where
+///         D: Deserializer<'de>,
+///     {
+///         let vec: Vec<T> = deserializer
+///             .deserialize_iter::<T>()?
+///             .collect::<Result<Vec<_>, _>>()?;
+///         Ok(MyVec(vec))
+///     }
+/// }
+/// ```
+#[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+pub struct DeserializeIter<'de, T, E> {
+    inner: DeserializeIterInner<'de>,
+    marker: PhantomData<(T, E)>,
+}
+
+/// Internal trait object for the actual sequence iteration.
+#[cfg(any(feature = "std", feature = "alloc"))]
+trait ErasedSeqAccess<'de> {
+    fn erased_next_element(&mut self) -> Result<Option<*const ()>, *const ()>;
+    fn erased_size_hint(&self) -> Option<usize>;
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+enum DeserializeIterInner<'de> {
+    Active(Box<dyn ErasedSeqAccess<'de> + 'de>),
+    Finished,
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, T, E> Iterator for DeserializeIter<'de, T, E> {
+    type Item = Result<T, E>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            DeserializeIterInner::Active(seq) => match seq.erased_next_element() {
+                Ok(Some(ptr)) => {
+                    // SAFETY: The pointer was created by Box::into_raw from a Box<T>
+                    let value = unsafe { *Box::from_raw(ptr as *mut T) };
+                    Some(Ok(value))
+                }
+                Ok(None) => {
+                    self.inner = DeserializeIterInner::Finished;
+                    None
+                }
+                Err(ptr) => {
+                    self.inner = DeserializeIterInner::Finished;
+                    // SAFETY: The pointer was created by Box::into_raw from a Box<E>
+                    let err = unsafe { *Box::from_raw(ptr as *mut E) };
+                    Some(Err(err))
+                }
+            },
+            DeserializeIterInner::Finished => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match &self.inner {
+            DeserializeIterInner::Active(seq) => match seq.erased_size_hint() {
+                Some(size) => (size, Some(size)),
+                None => (0, None),
+            },
+            DeserializeIterInner::Finished => (0, Some(0)),
+        }
+    }
+}
+
+/// A visitor that captures a `SeqAccess` and wraps it in a `DeserializeIter`.
+///
+/// This is used internally by [`Deserializer::deserialize_iter`] to invert
+/// the control flow from the visitor pattern to an iterator pattern.
+#[cfg(any(feature = "std", feature = "alloc"))]
+struct SeqCaptureVisitor<T, E>(PhantomData<(T, E)>);
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, T, E> Visitor<'de> for SeqCaptureVisitor<T, E>
+where
+    T: Deserialize<'de>,
+    E: Error,
+{
+    type Value = DeserializeIter<'de, T, E>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a sequence")
+    }
+
+    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        struct ErasedWrapper<'de, A, T, E>
+        where
+            A: SeqAccess<'de>,
+        {
+            seq: A,
+            finished: bool,
+            marker: PhantomData<(&'de (), T, E)>,
+        }
+
+        impl<'de, A, T, E> ErasedSeqAccess<'de> for ErasedWrapper<'de, A, T, E>
+        where
+            A: SeqAccess<'de>,
+            T: Deserialize<'de>,
+            E: Error,
+        {
+            fn erased_next_element(&mut self) -> Result<Option<*const ()>, *const ()> {
+                if self.finished {
+                    return Ok(None);
+                }
+                match self.seq.next_element::<T>() {
+                    Ok(Some(value)) => {
+                        let boxed = Box::new(value);
+                        Ok(Some(Box::into_raw(boxed) as *const ()))
+                    }
+                    Ok(None) => {
+                        self.finished = true;
+                        Ok(None)
+                    }
+                    Err(err) => {
+                        self.finished = true;
+                        // Convert the error to the target error type using Error::custom
+                        let converted: E = Error::custom(format_args!("{}", err));
+                        let boxed = Box::new(converted);
+                        Err(Box::into_raw(boxed) as *const ())
+                    }
+                }
+            }
+
+            fn erased_size_hint(&self) -> Option<usize> {
+                if self.finished {
+                    Some(0)
+                } else {
+                    self.seq.size_hint()
+                }
+            }
+        }
+
+        let erased: ErasedWrapper<'de, A, T, E> = ErasedWrapper {
+            seq,
+            finished: false,
+            marker: PhantomData,
+        };
+
+        // SAFETY: We need to convince Rust that the wrapper lives for 'de.
+        // This is safe because:
+        // 1. The SeqAccess A is created by the deserializer for this single call
+        // 2. All SeqAccess implementations in practice satisfy A: 'de
+        // 3. The wrapper only references data with lifetime 'de
+        //
+        // We use a transmute to erase the lifetime of A and then
+        // trust that the SeqAccess won't be used after its deserializer is dropped.
+        // See architecture.md for explanation of this pattern.
+        let boxed: Box<dyn ErasedSeqAccess<'de> + 'de> = unsafe {
+            mem::transmute::<
+                Box<dyn ErasedSeqAccess<'de> + '_>,
+                Box<dyn ErasedSeqAccess<'de> + 'de>,
+            >(Box::new(erased) as Box<dyn ErasedSeqAccess<'de> + '_>)
+        };
+
+        Ok(DeserializeIter {
+            inner: DeserializeIterInner::Active(boxed),
+            marker: PhantomData,
+        })
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// Provides a `Visitor` access to each entry of a map in the input.
 ///
 /// This is a trait that a `Deserializer` passes to a `Visitor` implementation.
@@ -2729,5 +2975,341 @@ mod tests {
         let iter: SeqIter<MockSeqAccess, i32> = unsafe { SeqIter::new_unchecked(seq) };
         let collected: Result<Vec<i32>, _> = iter.collect();
         assert_eq!(collected.unwrap(), vec![1, 2, 3]);
+    }
+
+    /// A mock Deserializer for testing deserialize_iter
+    struct MockDeserializer {
+        values: Vec<i32>,
+        error_at: Option<usize>,
+    }
+
+    impl MockDeserializer {
+        fn new(values: Vec<i32>) -> Self {
+            MockDeserializer {
+                values,
+                error_at: None,
+            }
+        }
+
+        fn with_error_at(values: Vec<i32>, error_at: usize) -> Self {
+            MockDeserializer {
+                values,
+                error_at: Some(error_at),
+            }
+        }
+    }
+
+    impl<'de> Deserializer<'de> for MockDeserializer {
+        type Error = value::Error;
+
+        fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            let seq = MockSeqAccess {
+                values: self.values,
+                index: 0,
+                error_at: self.error_at,
+                marker: PhantomData,
+            };
+            visitor.visit_seq(seq)
+        }
+
+        fn deserialize_bool<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_i8<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_i16<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_i32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_i64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_u8<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_u16<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_u32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_u64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_f32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_f64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_str<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_string<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_unit_struct<V>(
+            self,
+            _name: &'static str,
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_newtype_struct<V>(
+            self,
+            _name: &'static str,
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_tuple_struct<V>(
+            self,
+            _name: &'static str,
+            _len: usize,
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_map<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_struct<V>(
+            self,
+            _name: &'static str,
+            _fields: &'static [&'static str],
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_enum<V>(
+            self,
+            _name: &'static str,
+            _variants: &'static [&'static str],
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_identifier<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+
+        fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            Err(Error::custom("not implemented"))
+        }
+    }
+
+    #[test]
+    fn test_deserialize_iter_empty() {
+        let de = MockDeserializer::new(vec![]);
+        let iter = de.deserialize_iter::<i32>().unwrap();
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert!(collected.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_deserialize_iter_single_element() {
+        let de = MockDeserializer::new(vec![42]);
+        let iter = de.deserialize_iter::<i32>().unwrap();
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![42]);
+    }
+
+    #[test]
+    fn test_deserialize_iter_multiple_elements() {
+        let de = MockDeserializer::new(vec![1, 2, 3, 4, 5]);
+        let iter = de.deserialize_iter::<i32>().unwrap();
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_deserialize_iter_error_propagation() {
+        let de = MockDeserializer::with_error_at(vec![1, 2, 3], 1);
+        let iter = de.deserialize_iter::<i32>().unwrap();
+        let collected: Vec<Result<i32, _>> = iter.collect();
+        assert_eq!(collected.len(), 2);
+        assert!(collected[0].is_ok());
+        assert!(collected[1].is_err());
+    }
+
+    #[test]
+    fn test_deserialize_iter_stops_after_error() {
+        let de = MockDeserializer::with_error_at(vec![1, 2, 3, 4], 1);
+        let mut iter = de.deserialize_iter::<i32>().unwrap();
+
+        // First element succeeds
+        assert!(iter.next().unwrap().is_ok());
+        // Second element fails
+        assert!(iter.next().unwrap().is_err());
+        // Iterator should return None after error
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_deserialize_iter_size_hint() {
+        let de = MockDeserializer::new(vec![1, 2, 3]);
+        let iter = de.deserialize_iter::<i32>().unwrap();
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_deserialize_iter_size_hint_decreases() {
+        let de = MockDeserializer::new(vec![1, 2, 3]);
+        let mut iter = de.deserialize_iter::<i32>().unwrap();
+
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_deserialize_iter_size_hint_after_exhausted() {
+        let de = MockDeserializer::new(vec![1]);
+        let mut iter = de.deserialize_iter::<i32>().unwrap();
+
+        let _ = iter.next(); // consume the element
+        let _ = iter.next(); // exhaust the iterator
+        assert_eq!(iter.size_hint(), (0, Some(0)));
     }
 }
