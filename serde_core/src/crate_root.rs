@@ -27,9 +27,9 @@ macro_rules! crate_root {
             pub use self::core::time::Duration;
 
             #[cfg(all(feature = "alloc", not(feature = "std")))]
-            pub use alloc::borrow::{Cow, ToOwned};
+            pub use alloc::borrow::{Borrow, Cow, ToOwned};
             #[cfg(feature = "std")]
-            pub use std::borrow::{Cow, ToOwned};
+            pub use std::borrow::{Borrow, Cow, ToOwned};
 
             #[cfg(all(feature = "alloc", not(feature = "std")))]
             pub use alloc::string::{String, ToString};
