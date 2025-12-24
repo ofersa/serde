@@ -1778,6 +1778,42 @@ pub trait SeqAccess<'de> {
     fn size_hint(&self) -> Option<usize> {
         None
     }
+
+    /// Converts this `SeqAccess` into an iterator that deserializes elements.
+    ///
+    /// This is a convenience method that wraps `self` in a [`SeqAccessIterator`].
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::de::{Deserialize, Deserializer, SeqAccess, Visitor};
+    /// use std::fmt;
+    ///
+    /// struct SumVisitor;
+    ///
+    /// impl<'de> Visitor<'de> for SumVisitor {
+    ///     type Value = i64;
+    ///
+    ///     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    ///         formatter.write_str("a sequence of integers")
+    ///     }
+    ///
+    ///     fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    ///     where
+    ///         A: SeqAccess<'de>,
+    ///     {
+    ///         seq.deserialize_iter::<i64>().try_fold(0i64, |acc, x| Ok(acc + x?))
+    ///     }
+    /// }
+    /// ```
+    #[inline]
+    fn deserialize_iter<T>(self) -> SeqAccessIterator<'de, Self>
+    where
+        Self: Sized,
+        T: Deserialize<'de>,
+    {
+        SeqAccessIterator::new(self)
+    }
 }
 
 impl<'de, A> SeqAccess<'de> for &mut A
@@ -2388,5 +2424,84 @@ impl Display for WithDecimalPoint {
             tri!(write!(formatter, "{}", self.0));
         }
         Ok(())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// An iterator that deserializes elements from a `SeqAccess`.
+///
+/// This struct wraps a [`SeqAccess`] and provides an [`Iterator`] interface,
+/// yielding `Result<T, A::Error>` for each element in the sequence.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer, SeqAccess, SeqAccessIterator, Visitor};
+/// use std::fmt;
+///
+/// struct MyVisitor;
+///
+/// impl<'de> Visitor<'de> for MyVisitor {
+///     type Value = Vec<i32>;
+///
+///     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+///         formatter.write_str("a sequence of integers")
+///     }
+///
+///     fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+///     where
+///         A: SeqAccess<'de>,
+///     {
+///         SeqAccessIterator::new(seq).collect()
+///     }
+/// }
+/// ```
+pub struct SeqAccessIterator<'de, A>
+where
+    A: SeqAccess<'de>,
+{
+    seq: A,
+    _marker: PhantomData<&'de ()>,
+}
+
+impl<'de, A> SeqAccessIterator<'de, A>
+where
+    A: SeqAccess<'de>,
+{
+    /// Creates a new `SeqAccessIterator` from a `SeqAccess`.
+    pub fn new(seq: A) -> Self {
+        SeqAccessIterator {
+            seq,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns the underlying `SeqAccess`.
+    pub fn into_inner(self) -> A {
+        self.seq
+    }
+}
+
+impl<'de, A, T> Iterator for SeqAccessIterator<'de, A>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    type Item = Result<T, A::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.seq.next_element() {
+            Ok(Some(value)) => Some(Ok(value)),
+            Ok(None) => None,
+            Err(err) => Some(Err(err)),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.seq.size_hint() {
+            Some(size) => (size, Some(size)),
+            None => (0, None),
+        }
     }
 }
