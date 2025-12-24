@@ -1041,7 +1041,7 @@ fn test_iter_with_fold() {
                 where
                     A: SeqAccess<'de>,
                 {
-                    let iter: SeqAccessIterator<A, i32> = SeqAccessIterator::new(seq);
+                    let mut iter: SeqAccessIterator<A, i32> = SeqAccessIterator::new(seq);
                     let sum = iter
                         .try_fold(0i32, |acc, r| r.map(|x| acc + x))?;
                     Ok(Sum(sum))
