@@ -114,6 +114,11 @@
 
 use crate::lib::*;
 
+#[cfg(all(feature = "alloc", not(feature = "std")))]
+use alloc::vec::IntoIter;
+#[cfg(feature = "std")]
+use std::vec::IntoIter;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 pub mod value;
@@ -1252,6 +1257,89 @@ pub trait Deserializer<'de>: Sized {
     #[inline]
     fn is_human_readable(&self) -> bool {
         true
+    }
+
+    /// Deserialize a sequence as an iterator.
+    ///
+    /// This method provides a more ergonomic way to deserialize sequences by
+    /// returning an iterator over the elements, rather than requiring a custom
+    /// visitor implementation. This is particularly useful for types that
+    /// implement `FromIterator` or when you want to use iterator combinators
+    /// during deserialization.
+    ///
+    /// The returned iterator yields `Result<T, Self::Error>` for each element
+    /// in the sequence. Use `.collect::<Result<_, _>>()` to collect into a
+    /// collection while propagating errors.
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::de::{Deserialize, Deserializer};
+    /// use serde_derive::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Bar;
+    ///
+    /// struct Foo(Vec<Bar>);
+    ///
+    /// impl<'de> Deserialize<'de> for Foo {
+    ///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    ///     where
+    ///         D: Deserializer<'de>,
+    ///     {
+    ///         let bars = deserializer
+    ///             .deserialize_iter::<Bar>()?
+    ///             .collect::<Result<_, _>>()?;
+    ///         Ok(Foo(bars))
+    ///     }
+    /// }
+    /// ```
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
+    fn deserialize_iter<T>(self) -> Result<IntoIter<Result<T, Self::Error>>, Self::Error>
+    where
+        T: Deserialize<'de>,
+    {
+        struct IterVisitor<'de, T: Deserialize<'de>> {
+            marker: PhantomData<(&'de (), T)>,
+        }
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for IterVisitor<'de, T> {
+            type Value = Vec<Result<T, String>>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let iter: SeqAccessIterator<A, T> = SeqAccessIterator::new(seq);
+                // Collect all results, converting errors to strings for type erasure
+                let results: Vec<Result<T, String>> = iter
+                    .map(|r| r.map_err(|e| {
+                        use crate::lib::fmt::Write;
+                        let mut buf = String::new();
+                        let _ = write!(buf, "{}", e);
+                        buf
+                    }))
+                    .collect();
+                Ok(results)
+            }
+        }
+
+        let results = tri!(self.deserialize_seq(IterVisitor::<T> {
+            marker: PhantomData,
+        }));
+
+        // Convert String errors back to Self::Error
+        let converted: Vec<Result<T, Self::Error>> = results
+            .into_iter()
+            .map(|r| r.map_err(|s| Error::custom(s)))
+            .collect();
+
+        Ok(converted.into_iter())
     }
 
     // Not public API.
