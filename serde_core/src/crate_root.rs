@@ -143,7 +143,7 @@ macro_rules! crate_root {
         #[doc(inline)]
         pub use crate::de::{Deserialize, Deserializer};
         #[doc(inline)]
-        pub use crate::ser::{Serialize, Serializer};
+        pub use crate::ser::{Serialize, SerializeOwned, Serializer};
 
         // Used by generated code. Not public API.
         #[doc(hidden)]

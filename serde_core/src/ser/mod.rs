@@ -269,6 +269,68 @@ pub trait Serialize {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// A **data structure** that can be serialized by taking ownership of the value.
+///
+/// This trait enables destructive serialization, where the value is consumed
+/// during serialization. This can be more efficient than borrowing serialization
+/// in cases where the value is only needed for serialization and will be
+/// dropped immediately afterwards.
+///
+/// A blanket implementation is provided for `&T where T: Serialize`, allowing
+/// any type that implements `Serialize` to also be serialized by reference
+/// through `SerializeOwned`.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::ser::{SerializeOwned, Serializer};
+///
+/// fn serialize_and_drop<T, S>(value: T, serializer: S) -> Result<S::Ok, S::Error>
+/// where
+///     T: SerializeOwned,
+///     S: Serializer,
+/// {
+///     value.serialize_owned(serializer)
+/// }
+/// ```
+#[cfg_attr(
+    not(no_diagnostic_namespace),
+    diagnostic::on_unimplemented(
+        message = "the trait bound `{Self}: serde::SerializeOwned` is not satisfied",
+        note = "for local types consider adding `#[derive(serde::Serialize)]` to your `{Self}` type",
+        note = "for types from other crates check whether the crate offers a `serde` feature flag",
+    )
+)]
+pub trait SerializeOwned {
+    /// Serialize this value by taking ownership.
+    ///
+    /// This method consumes `self`, allowing implementations to avoid cloning
+    /// data that would otherwise need to be borrowed during serialization.
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer;
+}
+
+/// Blanket implementation of `SerializeOwned` for references to types that
+/// implement `Serialize`.
+///
+/// This allows any `&T` where `T: Serialize` to be used in contexts that
+/// require `SerializeOwned`, by simply delegating to the `Serialize` implementation.
+impl<T> SerializeOwned for &T
+where
+    T: ?Sized + Serialize,
+{
+    #[inline]
+    fn serialize_owned<S>(self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.serialize(serializer)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// A **data format** that can serialize any data structure supported by Serde.
 ///
 /// The role of this trait is to define the serialization half of the [Serde
