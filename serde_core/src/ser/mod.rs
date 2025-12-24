@@ -1521,6 +1521,49 @@ pub trait Serializer: Sized {
     fn is_human_readable(&self) -> bool {
         true
     }
+
+    /// Serialize a value by taking ownership of it.
+    ///
+    /// This method enables destructive serialization, where the value is
+    /// consumed during serialization. This can be more efficient than borrowing
+    /// serialization in cases where the value is only needed for serialization
+    /// and will be dropped immediately afterwards, as it allows implementations
+    /// to avoid cloning data that would otherwise need to be borrowed.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation panics with `unimplemented!()`. This is
+    /// intentional for backwards compatibility: existing `Serializer`
+    /// implementations will continue to work without modification. Serializer
+    /// implementations that wish to support owned serialization should override
+    /// this method.
+    ///
+    /// In a future major version, this default implementation may be removed,
+    /// requiring all `Serializer` implementations to provide their own.
+    ///
+    /// # Example
+    ///
+    /// ```edition2021
+    /// use serde::ser::{SerializeOwned, Serializer};
+    ///
+    /// fn serialize_and_drop<T, S>(value: T, serializer: S) -> Result<S::Ok, S::Error>
+    /// where
+    ///     T: SerializeOwned,
+    ///     S: Serializer,
+    /// {
+    ///     serializer.serialize_owned(value)
+    /// }
+    /// ```
+    fn serialize_owned<T>(self, value: T) -> Result<Self::Ok, Self::Error>
+    where
+        T: SerializeOwned,
+    {
+        let _ = value;
+        unimplemented!(
+            "serialize_owned is not implemented for this Serializer; \
+             override this method to support owned serialization"
+        )
+    }
 }
 
 /// Returned from `Serializer::serialize_seq`.
