@@ -1810,6 +1810,145 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// An iterator adapter that wraps a [`SeqAccess`] and yields deserialized elements.
+///
+/// This type allows using a `SeqAccess` as a standard Rust [`Iterator`], which
+/// enables use of iterator combinators like `collect`, `map`, `filter`, etc.
+/// when deserializing sequences.
+///
+/// # Example
+///
+/// ```edition2021
+/// use serde::de::{Deserialize, Deserializer, SeqAccess, SeqIter, Visitor};
+/// use std::fmt;
+///
+/// struct Foo(Vec<i32>);
+///
+/// impl<'de> Deserialize<'de> for Foo {
+///     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+///     where
+///         D: Deserializer<'de>,
+///     {
+///         struct FooVisitor;
+///
+///         impl<'de> Visitor<'de> for FooVisitor {
+///             type Value = Foo;
+///
+///             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+///                 formatter.write_str("a sequence of integers")
+///             }
+///
+///             fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+///             where
+///                 A: SeqAccess<'de>,
+///             {
+///                 // SAFETY: SeqAccess implementations always satisfy A: 'de in practice.
+///                 // See the architecture.md documentation for details.
+///                 let iter = unsafe { SeqIter::<i32, _>::new_unchecked(seq) };
+///                 let values: Result<Vec<i32>, _> = iter.collect();
+///                 Ok(Foo(values?))
+///             }
+///         }
+///
+///         deserializer.deserialize_seq(FooVisitor)
+///     }
+/// }
+/// ```
+///
+/// # Safety
+///
+/// The `SeqIter` type requires that the underlying `SeqAccess` implementation
+/// satisfies `A: 'de`. This is guaranteed by serde's design, but cannot be
+/// expressed in the type system due to how the `Visitor` trait is defined.
+/// See the [architecture documentation] for more details.
+///
+/// [architecture documentation]: https://serde.rs/lifetimes.html
+pub struct SeqIter<'de, T, A>
+where
+    A: SeqAccess<'de>,
+{
+    seq: A,
+    _marker: PhantomData<(&'de (), T)>,
+}
+
+impl<'de, T, A> SeqIter<'de, T, A>
+where
+    A: SeqAccess<'de> + 'de,
+    T: Deserialize<'de>,
+{
+    /// Creates a new `SeqIter` from a `SeqAccess`.
+    ///
+    /// This constructor requires `A: 'de`, which is always satisfied in practice
+    /// but cannot be expressed in `Visitor::visit_seq`. For use within a `Visitor`
+    /// implementation, use [`new_unchecked`](Self::new_unchecked) instead.
+    #[inline]
+    pub fn new(seq: A) -> Self {
+        SeqIter {
+            seq,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, T, A> SeqIter<'de, T, A>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    /// Creates a new `SeqIter` from a `SeqAccess` without requiring `A: 'de`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the `SeqAccess` implementation satisfies
+    /// `A: 'de`. This is guaranteed by serde's design: all `SeqAccess`
+    /// implementations are created by the deserializer for the duration of
+    /// a single call and only reference input data with lifetime `'de`.
+    ///
+    /// This constructor exists because the `Visitor::visit_seq` method has
+    /// the bound `A: SeqAccess<'de>` but NOT `A: 'de`, even though all
+    /// implementations satisfy both bounds in practice.
+    #[inline]
+    pub unsafe fn new_unchecked(seq: A) -> Self {
+        SeqIter {
+            seq,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns the remaining number of elements in the sequence, if known.
+    #[inline]
+    pub fn size_hint(&self) -> Option<usize> {
+        self.seq.size_hint()
+    }
+}
+
+impl<'de, T, A> Iterator for SeqIter<'de, T, A>
+where
+    A: SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    type Item = Result<T, A::Error>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.seq.next_element() {
+            Ok(Some(value)) => Some(Ok(value)),
+            Ok(None) => None,
+            Err(err) => Some(Err(err)),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.seq.size_hint() {
+            Some(size) => (size, Some(size)),
+            None => (0, None),
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// Provides a `Visitor` access to each entry of a map in the input.
 ///
 /// This is a trait that a `Deserializer` passes to a `Visitor` implementation.
