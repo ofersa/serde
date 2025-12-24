@@ -28,6 +28,7 @@ pub const RENAME_ALL_FIELDS: Symbol = Symbol("rename_all_fields");
 pub const REPR: Symbol = Symbol("repr");
 pub const SERDE: Symbol = Symbol("serde");
 pub const SERIALIZE: Symbol = Symbol("serialize");
+pub const SERIALIZE_OWNED: Symbol = Symbol("serialize_owned");
 pub const SERIALIZE_WITH: Symbol = Symbol("serialize_with");
 pub const SKIP: Symbol = Symbol("skip");
 pub const SKIP_DESERIALIZING: Symbol = Symbol("skip_deserializing");
