@@ -37,7 +37,7 @@
 /// #     forward_to_deserialize_any! {
 /// #         i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 /// #         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-/// #         tuple_struct map struct enum identifier ignored_any
+/// #         tuple_struct map struct enum identifier ignored_any iter
 /// #     }
 /// # }
 /// ```
@@ -67,7 +67,7 @@
 ///     forward_to_deserialize_any! {
 ///         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 ///         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-///         tuple_struct map struct enum identifier ignored_any
+///         tuple_struct map struct enum identifier ignored_any iter
 ///     }
 /// }
 /// ```
@@ -98,7 +98,7 @@
 ///     <W: Visitor<'q>>
 ///     bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
 ///     bytes byte_buf option unit unit_struct newtype_struct seq tuple
-///     tuple_struct map struct enum identifier ignored_any
+///     tuple_struct map struct enum identifier ignored_any iter
 /// }
 /// # }
 /// ```
@@ -226,5 +226,66 @@ macro_rules! forward_to_deserialize_any_helper {
     };
     (ignored_any<$l:tt, $v:ident>) => {
         forward_to_deserialize_any_method!{deserialize_ignored_any<$l, $v>()}
+    };
+    (iter<$l:tt, $v:ident>) => {
+        forward_to_deserialize_any_iter_method!{deserialize_iter<$l>}
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! forward_to_deserialize_any_iter_method {
+    (deserialize_iter<$l:tt>) => {
+        #[cfg(any(feature = "std", feature = "alloc"))]
+        #[inline]
+        fn deserialize_iter<T>(self) -> $crate::__private::Result<$crate::lib::vec::IntoIter<$crate::__private::Result<T, <Self as $crate::de::Deserializer<$l>>::Error>>, <Self as $crate::de::Deserializer<$l>>::Error>
+        where
+            T: $crate::Deserialize<$l>,
+        {
+            // Create a visitor that collects into a Vec, delegating to deserialize_any
+            struct IterVisitor<$l, T: $crate::Deserialize<$l>> {
+                marker: $crate::__private::PhantomData<(&$l (), T)>,
+            }
+
+            impl<$l, T: $crate::Deserialize<$l>> $crate::de::Visitor<$l> for IterVisitor<$l, T> {
+                type Value = $crate::lib::Vec<$crate::__private::Result<T, $crate::lib::String>>;
+
+                fn expecting(&self, formatter: &mut $crate::__private::Formatter) -> $crate::__private::fmt::Result {
+                    formatter.write_str("a sequence")
+                }
+
+                fn visit_seq<A>(self, seq: A) -> $crate::__private::Result<Self::Value, A::Error>
+                where
+                    A: $crate::de::SeqAccess<$l>,
+                {
+                    let iter: $crate::de::SeqAccessIterator<A, T> = $crate::de::SeqAccessIterator::new(seq);
+                    // Collect all results, converting errors to strings for type erasure
+                    let results: $crate::lib::Vec<$crate::__private::Result<T, $crate::lib::String>> = iter
+                        .map(|r| r.map_err(|e| {
+                            use $crate::__private::fmt::Write;
+                            let mut buf = $crate::lib::String::new();
+                            let _ = $crate::__private::write!(buf, "{}", e);
+                            buf
+                        }))
+                        .collect();
+                    $crate::__private::Ok(results)
+                }
+            }
+
+            let results = match self.deserialize_any(IterVisitor::<T> {
+                marker: $crate::__private::PhantomData,
+            }) {
+                $crate::__private::Ok(v) => v,
+                $crate::__private::Err(e) => return $crate::__private::Err(e),
+            };
+
+            // Convert String errors back to Self::Error
+            let converted: $crate::lib::Vec<$crate::__private::Result<T, <Self as $crate::de::Deserializer<$l>>::Error>> = results
+                .into_iter()
+                .map(|r| r.map_err(|s| $crate::de::Error::custom(s)))
+                .collect();
+
+            $crate::__private::Ok(converted.into_iter())
+        }
     };
 }
