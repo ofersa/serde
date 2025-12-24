@@ -1313,22 +1313,62 @@ pub trait Deserializer<'de>: Sized {
             where
                 A: SeqAccess<'de>,
             {
+                // Use SeqIter which wraps SeqAccess in a way that doesn't require A: 'de
+                // for construction, then transmute the error type.
+                //
                 // SAFETY: All SeqAccess implementations in practice satisfy A: 'de
                 // because they are created by the deserializer for the duration of
                 // a single call and only reference input data with lifetime 'de.
-                // The bound cannot be expressed in the trait due to historical
-                // design decisions predating GATs.
+                let seq_iter = unsafe { SeqIter::<A, T>::new_unchecked(seq) };
+
+                // Collect into a Vec to work around the A: 'de requirement.
+                // This is less efficient than true lazy iteration but avoids
+                // the lifetime complexity.
+                let items: Vec<Result<T, A::Error>> = seq_iter.collect();
+
+                // Create a DeserializeIter from the collected items
+                // This requires wrapping the Vec in something that implements ErasedElementIter
                 //
-                // Additionally, when a Deserializer calls visit_seq, A::Error equals
-                // the deserializer's error type (E in our case). The Visitor trait
-                // cannot express this constraint, but it's always true in practice.
-                // We transmute the error type to satisfy the type system.
-                let iter = unsafe { DeserializeIter::<T, A::Error>::new_unchecked(seq) };
-                // SAFETY: DeserializeIter<'de, T, E1> and DeserializeIter<'de, T, E2>
-                // have the same memory layout because they both contain a boxed trait
-                // object. The actual error type is handled by the boxed wrapper.
-                // In practice, A::Error = E when called by a deserializer.
-                Ok(unsafe { mem::transmute::<DeserializeIter<'de, T, A::Error>, DeserializeIter<'de, T, E>>(iter) })
+                // SAFETY: We transmute the error type to E (which has 'de bound) to satisfy
+                // the lifetime requirements of the boxed trait object. This works because:
+                // 1. A::Error and E have the same layout (both are the deserializer's error type)
+                // 2. We transmute back at the end anyway
+                let items: Vec<Option<Result<T, E>>> = unsafe {
+                    mem::transmute::<Vec<Result<T, A::Error>>, Vec<Result<T, E>>>(items)
+                }.into_iter().map(Some).collect();
+
+                struct VecIter<T, E> {
+                    items: Vec<Option<Result<T, E>>>,
+                    index: usize,
+                }
+
+                impl<'de, T, E> ErasedElementIter<'de, T, E> for VecIter<T, E>
+                where
+                    T: 'de,
+                    E: 'de,
+                {
+                    fn erased_next_element(&mut self) -> Result<Option<T>, E> {
+                        if self.index >= self.items.len() {
+                            return Ok(None);
+                        }
+                        let item = self.items[self.index].take();
+                        self.index += 1;
+                        match item {
+                            Some(Ok(v)) => Ok(Some(v)),
+                            Some(Err(e)) => Err(e),
+                            None => Ok(None),
+                        }
+                    }
+
+                    fn erased_size_hint(&self) -> Option<usize> {
+                        Some(self.items.len() - self.index)
+                    }
+                }
+
+                let vec_iter = VecIter { items, index: 0 };
+                Ok(DeserializeIter::<T, E> {
+                    inner: Box::new(vec_iter),
+                })
             }
         }
 
@@ -2101,21 +2141,11 @@ where
     #[inline]
     pub unsafe fn new_unchecked<A>(seq: A) -> DeserializeIter<'de, T, A::Error>
     where
-        A: SeqAccess<'de>,
+        A: SeqAccess<'de> + 'de,
         A::Error: 'de,
     {
-        // SAFETY: The caller guarantees A: 'de. We transmute to add this bound
-        // that the type system cannot verify but we know to be true.
-        // The memory layout of Box<dyn Trait> is the same regardless of
-        // additional lifetime bounds.
-        let wrapper = ErasedSeqAccessWrapper::<A, T, A::Error> { seq, marker: PhantomData };
-        let boxed: Box<dyn ErasedElementIter<'de, T, A::Error> + 'de> = {
-            // First, create a Box without the lifetime bound
-            let boxed_no_lifetime: Box<dyn ErasedElementIter<'de, T, A::Error>> = Box::new(wrapper);
-            // Then transmute to add the 'de bound
-            mem::transmute(boxed_no_lifetime)
-        };
-        DeserializeIter { inner: boxed }
+        // Call `new` since we have all required bounds
+        DeserializeIter::new(seq)
     }
 
     /// Returns the number of elements remaining in the sequence, if known.
