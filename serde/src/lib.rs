@@ -25,6 +25,36 @@
 //! serialization to perform the same speed as a handwritten serializer for the
 //! specific selection of data structure and data format.
 //!
+//! ## Owned Serialization
+//!
+//! In addition to the standard `Serialize` trait which borrows data during
+//! serialization, Serde provides [`SerializeOwned`] for *destructive* or
+//! *owned* serialization. This trait enables serialization that consumes the
+//! value being serialized, which can be more efficient in cases where:
+//!
+//! - The value is only needed for serialization and will be dropped afterwards
+//! - Converting data from its in-memory representation to a serialization-friendly
+//!   format would otherwise require cloning
+//! - You want to leverage Rust's move semantics to avoid unnecessary copies
+//!
+//! A blanket implementation ensures that `&T: SerializeOwned` where `T: Serialize`,
+//! providing backwards compatibility with existing code while enabling new
+//! optimization opportunities.
+//!
+//! ```edition2021
+//! use serde::ser::{SerializeOwned, Serializer};
+//!
+//! fn serialize_and_drop<T, S>(value: T, serializer: S) -> Result<S::Ok, S::Error>
+//! where
+//!     T: SerializeOwned,
+//!     S: Serializer,
+//! {
+//!     value.serialize_owned(serializer)
+//! }
+//! ```
+//!
+//! [`SerializeOwned`]: ser::SerializeOwned
+//!
 //! ## Data formats
 //!
 //! The following is a partial list of data formats that have been implemented
