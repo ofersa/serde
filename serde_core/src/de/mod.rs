@@ -1300,7 +1300,7 @@ pub trait Deserializer<'de>: Sized {
 
         impl<'de, T, E> Visitor<'de> for DeserializeIterVisitor<T, E>
         where
-            T: Deserialize<'de>,
+            T: Deserialize<'de> + 'de,
             E: Error + 'de,
         {
             type Value = DeserializeIter<'de, T, E>;
@@ -2066,7 +2066,7 @@ pub struct DeserializeIter<'de, T, E> {
 #[cfg(any(feature = "std", feature = "alloc"))]
 impl<'de, T, E> DeserializeIter<'de, T, E>
 where
-    T: Deserialize<'de>,
+    T: Deserialize<'de> + 'de,
     E: Error + 'de,
 {
     /// Creates a new `DeserializeIter` from a `SeqAccess`.
@@ -2128,7 +2128,7 @@ where
 #[cfg(any(feature = "std", feature = "alloc"))]
 impl<'de, T, E> Iterator for DeserializeIter<'de, T, E>
 where
-    T: Deserialize<'de>,
+    T: Deserialize<'de> + 'de,
     E: Error + 'de,
 {
     type Item = Result<T, E>;
