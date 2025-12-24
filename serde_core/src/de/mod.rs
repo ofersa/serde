@@ -2579,3 +2579,155 @@ impl Display for WithDecimalPoint {
         Ok(())
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// A mock SeqAccess implementation for testing SeqIter
+    struct MockSeqAccess<'de> {
+        values: Vec<i32>,
+        index: usize,
+        error_at: Option<usize>,
+        marker: PhantomData<&'de ()>,
+    }
+
+    impl<'de> MockSeqAccess<'de> {
+        fn new(values: Vec<i32>) -> Self {
+            MockSeqAccess {
+                values,
+                index: 0,
+                error_at: None,
+                marker: PhantomData,
+            }
+        }
+
+        fn with_error_at(values: Vec<i32>, error_at: usize) -> Self {
+            MockSeqAccess {
+                values,
+                index: 0,
+                error_at: Some(error_at),
+                marker: PhantomData,
+            }
+        }
+    }
+
+    impl<'de> SeqAccess<'de> for MockSeqAccess<'de> {
+        type Error = value::Error;
+
+        fn next_element_seed<T>(&mut self, _seed: T) -> Result<Option<T::Value>, Self::Error>
+        where
+            T: DeserializeSeed<'de>,
+        {
+            if let Some(error_at) = self.error_at {
+                if self.index == error_at {
+                    return Err(Error::custom("mock error"));
+                }
+            }
+            if self.index < self.values.len() {
+                let value = self.values[self.index];
+                self.index += 1;
+                // SAFETY: We know T::Value is i32 in our tests
+                Ok(Some(unsafe { core::mem::transmute_copy(&value) }))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            Some(self.values.len() - self.index)
+        }
+    }
+
+    #[test]
+    fn test_seq_iter_empty() {
+        let seq = MockSeqAccess::new(vec![]);
+        let iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+        let collected: Vec<Result<i32, _>> = iter.collect();
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn test_seq_iter_single_element() {
+        let seq = MockSeqAccess::new(vec![42]);
+        let iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![42]);
+    }
+
+    #[test]
+    fn test_seq_iter_multiple_elements() {
+        let seq = MockSeqAccess::new(vec![1, 2, 3, 4, 5]);
+        let iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_seq_iter_error_handling() {
+        let seq = MockSeqAccess::with_error_at(vec![1, 2, 3], 1);
+        let iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+        let collected: Vec<Result<i32, _>> = iter.collect();
+        assert_eq!(collected.len(), 2);
+        assert!(collected[0].is_ok());
+        assert!(collected[1].is_err());
+    }
+
+    #[test]
+    fn test_seq_iter_stops_after_error() {
+        let seq = MockSeqAccess::with_error_at(vec![1, 2, 3, 4], 1);
+        let mut iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+
+        // First element succeeds
+        assert!(iter.next().unwrap().is_ok());
+        // Second element fails
+        assert!(iter.next().unwrap().is_err());
+        // Iterator should return None after error
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint() {
+        let seq = MockSeqAccess::new(vec![1, 2, 3]);
+        let iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint_decreases() {
+        let seq = MockSeqAccess::new(vec![1, 2, 3]);
+        let mut iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        let _ = iter.next();
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_seq_iter_size_hint_after_exhausted() {
+        let seq = MockSeqAccess::new(vec![1]);
+        let mut iter: SeqIter<MockSeqAccess, i32> = SeqIter::new(seq);
+
+        let _ = iter.next(); // consume the element
+        let _ = iter.next(); // exhaust the iterator
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_seq_iter_new_unchecked() {
+        let seq = MockSeqAccess::new(vec![1, 2, 3]);
+        // SAFETY: MockSeqAccess satisfies the lifetime requirements
+        let iter: SeqIter<MockSeqAccess, i32> = unsafe { SeqIter::new_unchecked(seq) };
+        let collected: Result<Vec<i32>, _> = iter.collect();
+        assert_eq!(collected.unwrap(), vec![1, 2, 3]);
+    }
+}
